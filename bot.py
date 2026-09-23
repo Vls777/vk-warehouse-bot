@@ -215,13 +215,10 @@ def main_menu(user_id):
     role = get_role(user_id)
     kb = VkKeyboard(one_time=False)
     kb.add_button("📋 Остатки на складе", color=VkKeyboardColor.PRIMARY)
-
-    # Заявки — доступны всем, включая админа и кладовщика
     kb.add_line()
     kb.add_button("📦 Новая заявка", color=VkKeyboardColor.POSITIVE)
     kb.add_line()
     kb.add_button("📄 Мои заявки", color=VkKeyboardColor.SECONDARY)
-
     if role in ("warehouse", "admin"):
         kb.add_line()
         kb.add_button("📥 Заявки станочников", color=VkKeyboardColor.POSITIVE)
@@ -297,7 +294,7 @@ HELP_TEXT = """📖 КОМАНДЫ БОТА
 /help — справка
 /whoami — мой ID и роль
 
-Станочник:
+Для всех:
 📦 Новая заявка
 📄 Мои заявки
 
