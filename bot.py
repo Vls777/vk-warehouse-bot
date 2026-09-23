@@ -215,21 +215,34 @@ def main_menu(user_id):
     role = get_role(user_id)
     kb = VkKeyboard(one_time=False)
     kb.add_button("📋 Остатки на складе", color=VkKeyboardColor.PRIMARY)
+
+    # Заявки — доступны всем, включая админа и кладовщика
+    kb.add_line()
+    kb.add_button("📦 Новая заявка", color=VkKeyboardColor.POSITIVE)
+    kb.add_line()
+    kb.add_button("📄 Мои заявки", color=VkKeyboardColor.SECONDARY)
+
     if role in ("warehouse", "admin"):
-        kb.add_line(); kb.add_button("📥 Заявки станочников", color=VkKeyboardColor.POSITIVE)
-        kb.add_line(); kb.add_button("➕ Приход материала", color=VkKeyboardColor.PRIMARY)
-        kb.add_line(); kb.add_button("📦 Массовый приход", color=VkKeyboardColor.PRIMARY)
-        kb.add_line(); kb.add_button("🆕 Новая номенклатура", color=VkKeyboardColor.PRIMARY)
-        kb.add_line(); kb.add_button("✏️ Редактировать", color=VkKeyboardColor.PRIMARY)
-        kb.add_line(); kb.add_button("🗑 Удалить номенклатуру", color=VkKeyboardColor.NEGATIVE)
-        kb.add_line(); kb.add_button("🧹 Очистить остатки", color=VkKeyboardColor.NEGATIVE)
-        kb.add_line(); kb.add_button("📊 Сводка", color=VkKeyboardColor.SECONDARY)
+        kb.add_line()
+        kb.add_button("📥 Заявки станочников", color=VkKeyboardColor.POSITIVE)
+        kb.add_line()
+        kb.add_button("➕ Приход материала", color=VkKeyboardColor.PRIMARY)
+        kb.add_line()
+        kb.add_button("📦 Массовый приход", color=VkKeyboardColor.PRIMARY)
+        kb.add_line()
+        kb.add_button("🆕 Новая номенклатура", color=VkKeyboardColor.PRIMARY)
+        kb.add_line()
+        kb.add_button("✏️ Редактировать", color=VkKeyboardColor.PRIMARY)
+        kb.add_line()
+        kb.add_button("🗑 Удалить номенклатуру", color=VkKeyboardColor.NEGATIVE)
+        kb.add_line()
+        kb.add_button("🧹 Очистить остатки", color=VkKeyboardColor.NEGATIVE)
+        kb.add_line()
+        kb.add_button("📊 Сводка", color=VkKeyboardColor.SECONDARY)
         kb.add_button("📋 Журнал", color=VkKeyboardColor.SECONDARY)
         if role == "admin":
-            kb.add_line(); kb.add_button("👥 Пользователи", color=VkKeyboardColor.SECONDARY)
-    else:
-        kb.add_line(); kb.add_button("📦 Новая заявка", color=VkKeyboardColor.POSITIVE)
-        kb.add_line(); kb.add_button("📄 Мои заявки", color=VkKeyboardColor.SECONDARY)
+            kb.add_line()
+            kb.add_button("👥 Пользователи", color=VkKeyboardColor.SECONDARY)
     return kb.get_keyboard()
 
 
