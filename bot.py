@@ -18,7 +18,7 @@ from vk_api.utils import get_random_id
 # ======================= НАСТРОЙКИ =======================
 GROUP_TOKEN = os.getenv("GROUP_TOKEN", "ВСТАВЬТЕ_СЮДА_ТОКЕН")
 GROUP_ID = int(os.getenv("GROUP_ID", 0))
-ADMIN_IDS = {123456789}  # замените на свой ID ВКонтакте
+ADMIN_IDS = {358344629}  # замените на свой ID ВКонтакте
 DB_PATH = "/app/data/warehouse.db"
 # =========================================================
 
