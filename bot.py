@@ -356,7 +356,8 @@ def add_to_cart(vk, user_id, mid):
     st = get_state(user_id)
     cart = list(st["data"].get("cart", []))
     default_plan = st["data"].get("default_plan", "")
-    cart.append({"material_id": mid, "qty": None, "plan": default_plan or None})
+    # План выберем отдельно на следующем шаге — не копируем его сюда
+    cart.append({"material_id": mid, "qty": None, "plan": None})
     idx = len(cart) - 1
     set_state(user_id, "cart_qty", cart=cart, editing_index=idx,
               default_plan=default_plan)
@@ -948,12 +949,8 @@ def handle_callback(vk, user_id, command):
         if not cart:
             send(vk, user_id, "Корзина пуста.", main_menu(user_id)); return
         idx = st["data"].get("editing_index", len(cart) - 1)
-        if 0 <= idx < len(cart) and cart[idx].get("qty") is None:
+        if 0 <= idx < len(cart):
             cart[idx]["plan"] = str(n)
-        else:
-            for it in cart:
-                if not it.get("plan"):
-                    it["plan"] = str(n)
         try: register_plan(n)
         except: pass
         set_state(user_id, "cart", cart=cart, default_plan=str(n))
@@ -1102,12 +1099,8 @@ def handle_message(vk, user_id, text):
             send(vk, user_id, f"❗ Число от {PLAN_MIN} до {PLAN_MAX}."); return
         cart = list(data.get("cart", []))
         idx = data.get("editing_index", len(cart) - 1)
-        if 0 <= idx < len(cart) and cart[idx].get("qty") is None:
+        if 0 <= idx < len(cart):
             cart[idx]["plan"] = str(n)
-        else:
-            for it in cart:
-                if not it.get("plan"):
-                    it["plan"] = str(n)
         try: register_plan(n)
         except: pass
         set_state(user_id, "cart", cart=cart, default_plan=str(n))
