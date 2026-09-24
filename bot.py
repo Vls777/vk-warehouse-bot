@@ -92,17 +92,32 @@ def init_db():
         if "hidden" not in cols("materials"):
             con.execute("ALTER TABLE materials ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0")
 
-        # Служебные позиции для заявок на кромку
+        # Служебные позиции edge: убрать дубли, поставить правильные единицы
         now2 = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        r1 = con.execute("SELECT 1 FROM materials WHERE category='edge' AND hidden=1 "
-                         "AND name='Кромка'").fetchone()
-        if not r1:
+        hidden_edges = con.execute("SELECT * FROM materials WHERE category='edge' "
+                                   "AND hidden=1 ORDER BY id").fetchall()
+        seen_main = False
+        seen_glue = False
+        for row in hidden_edges:
+            nm = (row["name"] or "").strip()
+            is_glue = "клей" in nm.lower()
+            is_main = (nm == "Кромка")
+            if is_main and not seen_main:
+                seen_main = True
+                con.execute("UPDATE materials SET unit='м', updated_at=? WHERE id=?",
+                            (now2, row["id"]))
+                continue
+            if is_glue and not seen_glue:
+                seen_glue = True
+                con.execute("UPDATE materials SET name='Клей кромочный', unit='канистра', "
+                            "updated_at=? WHERE id=?", (now2, row["id"]))
+                continue
+            con.execute("DELETE FROM materials WHERE id=?", (row["id"],))
+        if not seen_main:
             con.execute("INSERT INTO materials (category,name,unit,qty,thickness,decor,"
                         "hidden,updated_at) VALUES ('edge','Кромка','м',0,'','',1,?)",
                         (now2,))
-        r2 = con.execute("SELECT 1 FROM materials WHERE category='edge' AND hidden=1 "
-                         "AND name='Клей кромочный'").fetchone()
-        if not r2:
+        if not seen_glue:
             con.execute("INSERT INTO materials (category,name,unit,qty,thickness,decor,"
                         "hidden,updated_at) VALUES ('edge','Клей кромочный','канистра',0,'','',1,?)",
                         (now2,))
@@ -262,9 +277,14 @@ def _find_edge_glue():
     with db() as con:
         rows = con.execute("SELECT * FROM materials WHERE category='edge' "
                            "AND hidden=1").fetchall()
+    # приоритет — unit='канистра'
     for r in rows:
-        nm = (r["name"] or "")
-        if "клей" in nm.lower():
+        nm = (r["name"] or "").lower()
+        if "клей" in nm and (r["unit"] or "").lower().startswith("канист"):
+            return r
+    for r in rows:
+        nm = (r["name"] or "").lower()
+        if "клей" in nm:
             return r
     with db() as con:
         con.execute("INSERT INTO materials (category,name,unit,qty,thickness,decor,"
@@ -687,7 +707,10 @@ def show_cart(vk, user_id):
             lines.append(f"{i}. {label} (план {plan})")
         else:
             qty_str = f"{qty:g}" if qty is not None else "?"
-            unit = (m["unit"] if m else "") or ""
+            if is_hidden and "клей" in (m["name"] or "").lower():
+                unit = "канистр"
+            else:
+                unit = (m["unit"] if m else "") or ""
             lines.append(f"{i}. {label} — {qty_str} {unit} (план {plan})")
     kb = VkKeyboard(one_time=False)
     kb.add_callback_button("➕ Добавить", color=VkKeyboardColor.PRIMARY,
@@ -915,7 +938,7 @@ def submit_cart(vk, user_id):
                 plan = it.get("plan") or "—"
                 if m and m["hidden"] and (m["category"] or "") == "edge":
                     if "клей" in (m["name"] or "").lower():
-                        lines.append(f"{i}. {full_label(m)} — {it['qty']:g} {m['unit']} (план {plan})")
+                        lines.append(f"{i}. {full_label(m)} — {it['qty']:g} канистр (план {plan})")
                     else:
                         lines.append(f"{i}. {full_label(m)} (план {plan})")
                 else:
@@ -928,7 +951,7 @@ def submit_cart(vk, user_id):
                 plan = it.get("plan") or "—"
                 if m and m["hidden"] and (m["category"] or "") == "edge":
                     if "клей" in (m["name"] or "").lower():
-                        notif.append(f"{i}. {full_label(m)} — {it['qty']:g} {m['unit']} (план {plan})")
+                        notif.append(f"{i}. {full_label(m)} — {it['qty']:g} канистр (план {plan})")
                     else:
                         notif.append(f"{i}. {full_label(m)} (план {plan})")
                 else:
@@ -1079,8 +1102,12 @@ def show_request_details(vk, user_id, rid):
                 warn = ""
                 if cat and cat != "edge" and stock < it["qty"]:
                     warn = " ⚠️"
+                if is_hidden and "клей" in (name or "").lower():
+                    unit_display = "канистр"
+                else:
+                    unit_display = it["m_unit"] or ""
                 lines.append(f"{i}. [{cat_word(cat)}] {label} — "
-                             f"{it['qty']:g} {it['m_unit'] or ''} (план {plan}){warn}")
+                             f"{it['qty']:g} {unit_display} (план {plan}){warn}")
     else:
         m = get_material(r["material_id"])
         lines.append(f"• {full_label(m) if m else '?'} — {r['qty']:g}")
@@ -1120,10 +1147,11 @@ def issue_request(vk, user_id, rid):
                     summary.append(f"ID {it['material_id']} — удалён"); continue
                 if m["hidden"]:
                     nm = (m["name"] or "").lower()
+                    plan_it = it["plan"] or "—"
                     if "клей" in nm:
-                        summary.append(f"{full_label(m)} — {it['qty']:g} {m['unit']}")
+                        summary.append(f"{full_label(m)} — {it['qty']:g} канистр (план {plan_it})")
                     else:
-                        summary.append(f"{full_label(m)}")
+                        summary.append(f"{full_label(m)} (план {plan_it})")
                     continue
                 new_qty = m["qty"] - it["qty"]
                 con.execute("UPDATE materials SET qty=?, updated_at=? WHERE id=?",
@@ -1144,13 +1172,20 @@ def issue_request(vk, user_id, rid):
         con.execute("UPDATE requests SET status='issued', updated_at=? WHERE id=?",
                     (now_str(), rid))
         con.commit()
+        plan_rows = con.execute("SELECT DISTINCT plan FROM request_items "
+                                "WHERE request_id=? AND COALESCE(plan,'')!=''",
+                                (rid,)).fetchall()
+    plans_list = [pr["plan"] for pr in plan_rows]
+    plan_str = ", ".join(plans_list) if plans_list else (r["plan"] or "—")
+
     log_action(user_id, f"Выдана заявка №{rid}", "; ".join(summary))
-    txt = f"✅ Заявка №{rid} — «Выдал»\n" + "\n".join(summary)
+    txt = f"✅ Заявка №{rid} (план {plan_str}) — «Выдал»\n" + "\n".join(summary)
     if minus_lines:
         txt += "\n\n⚠️ Ушло в минус:\n" + "\n".join(minus_lines)
     send(vk, user_id, txt)
     try:
-        send(vk, r["user_id"], f"✅ Заявка №{rid} выполнена:\n" + "\n".join(summary))
+        send(vk, r["user_id"],
+             f"✅ Заявка №{rid} выполнена (план {plan_str}):\n" + "\n".join(summary))
     except Exception: pass
 
 
@@ -1162,10 +1197,15 @@ def reject_request(vk, user_id, rid):
         con.execute("UPDATE requests SET status='rejected', updated_at=? WHERE id=?",
                     (now_str(), rid))
         con.commit()
+        plan_rows = con.execute("SELECT DISTINCT plan FROM request_items "
+                                "WHERE request_id=? AND COALESCE(plan,'')!=''",
+                                (rid,)).fetchall()
+    plans_list = [pr["plan"] for pr in plan_rows]
+    plan_str = ", ".join(plans_list) if plans_list else (r["plan"] or "—")
     log_action(user_id, f"Отклонена заявка №{rid}")
-    send(vk, user_id, f"❌ Заявка №{rid} — «Не выдал».")
+    send(vk, user_id, f"❌ Заявка №{rid} (план {plan_str}) — «Не выдал».")
     try:
-        send(vk, r["user_id"], f"❌ Заявка №{rid} — не выдана.")
+        send(vk, r["user_id"], f"❌ Заявка №{rid} (план {plan_str}) — не выдана.")
     except Exception: pass
 
 
