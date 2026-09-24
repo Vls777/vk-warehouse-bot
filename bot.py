@@ -223,6 +223,31 @@ def material_label(m):
     return " ".join(parts) if parts else m["name"]
 
 
+def _find_edge_main():
+    with db() as con:
+        row = con.execute("SELECT * FROM materials WHERE category='edge' "
+                          "AND LOWER(name) NOT LIKE '%клей%' "
+                          "ORDER BY id LIMIT 1").fetchone()
+    return row
+
+
+def _find_edge_glue():
+    with db() as con:
+        row = con.execute("SELECT * FROM materials WHERE category='edge' "
+                          "AND LOWER(name) LIKE '%клей%' "
+                          "ORDER BY id LIMIT 1").fetchone()
+    return row
+
+
+def _add_edge_to_cart(cart, plan, glue_qty=None):
+    edge = _find_edge_main()
+    glue = _find_edge_glue()
+    if edge:
+        cart.append({"material_id": edge["id"], "qty": 1, "plan": plan})
+    if glue_qty and glue:
+        cart.append({"material_id": glue["id"], "qty": glue_qty, "plan": plan})
+
+
 def _cats_words_for_items(items):
     seen = []
     for it in items:
@@ -604,6 +629,55 @@ def show_cart(vk, user_id):
     kb.add_line()
     kb.add_button("⬅️ В меню", color=VkKeyboardColor.SECONDARY)
     send(vk, user_id, "\n".join(lines), kb.get_keyboard())
+
+
+def show_edge_plan_page(vk, user_id, page=1):
+    items, base = plan_page_items(page)
+    if not items:
+        send(vk, user_id, "Нет номеров."); return
+    last = last_plan_number()
+    st = get_state(user_id)
+    default_plan = st["data"].get("default_plan", "")
+    hint = f"Последний план: {last}" if last else "Раньше планов не было"
+    kb = VkKeyboard(one_time=False)
+    for i, n in enumerate(items):
+        if i % 2 == 0 and i > 0: kb.add_line()
+        kb.add_callback_button(str(n), color=VkKeyboardColor.PRIMARY,
+                               payload={"command": f"edge_plan:{n}"})
+    kb.add_line()
+    if page > 1:
+        kb.add_callback_button("◀️ -10", color=VkKeyboardColor.SECONDARY,
+                               payload={"command": f"edge_plan_page:{page-1}"})
+    if items[-1] < PLAN_MAX:
+        kb.add_callback_button("+10 ▶️", color=VkKeyboardColor.SECONDARY,
+                               payload={"command": f"edge_plan_page:{page+1}"})
+    kb.add_line()
+    kb.add_callback_button("🔢 Вручную", color=VkKeyboardColor.PRIMARY,
+                           payload={"command": "edge_plan_manual"})
+    kb.add_line()
+    kb.add_callback_button("⬅️ К категориям", color=VkKeyboardColor.SECONDARY,
+                           payload={"command": "cart_back_cat"})
+    kb.add_line()
+    kb.add_button("⬅️ В меню", color=VkKeyboardColor.SECONDARY)
+    set_state(user_id, "edge_plan", cart=list(st["data"].get("cart", [])),
+              default_plan=default_plan, page=page)
+    send(vk, user_id, f"📏 Кромка. Шаг 1. Выберите план.\n{hint}\n"
+                      f"Диапазон {items[0]}–{items[-1]}.", kb.get_keyboard())
+
+
+def show_edge_glue_question(vk, user_id, plan):
+    kb = VkKeyboard(one_time=False)
+    kb.add_callback_button("✅ Да, с клеем", color=VkKeyboardColor.POSITIVE,
+                           payload={"command": "edge_glue:yes"})
+    kb.add_callback_button("❌ Нет, без клея", color=VkKeyboardColor.SECONDARY,
+                           payload={"command": "edge_glue:no"})
+    kb.add_line()
+    kb.add_callback_button("⬅️ К выбору плана", color=VkKeyboardColor.SECONDARY,
+                           payload={"command": "edge_plan_again"})
+    kb.add_line()
+    kb.add_button("⬅️ В меню", color=VkKeyboardColor.SECONDARY)
+    send(vk, user_id, f"📏 Кромка, план {plan}.\n\nНужен кромочный клей?",
+         kb.get_keyboard())
 
 
 def show_plan_page(vk, user_id, page=1):
@@ -1515,8 +1589,12 @@ def handle_callback(vk, user_id, command):
     if command.startswith("cart_cat:"):
         cat = command.split(":", 1)[1]
         st = get_state(user_id)
-        set_state(user_id, "cart_choose", cart=list(st["data"].get("cart", [])),
-                  default_plan=st["data"].get("default_plan", ""))
+        cart = list(st["data"].get("cart", []))
+        default_plan = st["data"].get("default_plan", "")
+        if cat == "edge":
+            set_state(user_id, "edge_plan", cart=cart, default_plan=default_plan)
+            show_edge_plan_page(vk, user_id, 1); return
+        set_state(user_id, "cart_choose", cart=cart, default_plan=default_plan)
         show_thicknesses_for_cart(vk, user_id, cat); return
     if command.startswith("cart_thick:"):
         rest = command.split(":", 2)[1:]
@@ -1570,6 +1648,49 @@ def handle_callback(vk, user_id, command):
                   default_plan=st["data"].get("default_plan", ""))
         show_categories_for_cart(vk, user_id); return
 
+    # --- Кромка ---
+    if command.startswith("edge_plan_page:"):
+        page = safe_int(command.split(":", 1)[1]) or 1
+        st = get_state(user_id)
+        set_state(user_id, "edge_plan", cart=list(st["data"].get("cart", [])),
+                  default_plan=st["data"].get("default_plan", ""), page=page)
+        show_edge_plan_page(vk, user_id, page); return
+    if command.startswith("edge_plan:"):
+        n = safe_int(command.split(":", 1)[1])
+        if n is None: return
+        st = get_state(user_id)
+        cart = list(st["data"].get("cart", []))
+        try: register_plan(n)
+        except: pass
+        set_state(user_id, "edge_glue", cart=cart, plan=str(n), default_plan=str(n))
+        show_edge_glue_question(vk, user_id, n); return
+    if command == "edge_plan_manual":
+        st = get_state(user_id)
+        set_state(user_id, "edge_plan_manual",
+                  cart=list(st["data"].get("cart", [])),
+                  default_plan=st["data"].get("default_plan", ""))
+        send(vk, user_id, "🔢 Введите номер плана (1–2000):"); return
+    if command == "edge_plan_again":
+        st = get_state(user_id)
+        set_state(user_id, "edge_plan", cart=list(st["data"].get("cart", [])),
+                  default_plan=st["data"].get("default_plan", ""))
+        show_edge_plan_page(vk, user_id, 1); return
+    if command == "edge_glue:no":
+        st = get_state(user_id)
+        cart = list(st["data"].get("cart", []))
+        plan = st["data"].get("plan", "")
+        _add_edge_to_cart(cart, plan, glue_qty=None)
+        set_state(user_id, "cart", cart=cart, default_plan=plan)
+        send(vk, user_id, "✅ Кромка добавлена в корзину")
+        show_cart(vk, user_id); return
+    if command == "edge_glue:yes":
+        st = get_state(user_id)
+        cart = list(st["data"].get("cart", []))
+        plan = st["data"].get("plan", "")
+        set_state(user_id, "edge_glue_qty", cart=cart, plan=plan)
+        send(vk, user_id, "🔢 Введите количество клея (кг):"); return
+
+    # --- План для пиломатериалов ---
     if command.startswith("plan_page:"):
         page = safe_int(command.split(":", 1)[1]) or 1
         st = get_state(user_id)
@@ -1808,6 +1929,31 @@ def handle_message(vk, user_id, text):
         set_state(user_id, "inv_qty", **data2)
         show_inventory_item(vk, user_id); return
 
+    if state == "edge_glue_qty":
+        try:
+            qty = float(text.replace(",", "."))
+            if qty <= 0: raise ValueError
+        except ValueError:
+            send(vk, user_id, "❗ Введите положительное число."); return
+        cart = list(data.get("cart", []))
+        plan = data.get("plan", "")
+        _add_edge_to_cart(cart, plan, glue_qty=qty)
+        set_state(user_id, "cart", cart=cart, default_plan=plan)
+        send(vk, user_id, f"✅ Кромка + клей {qty:g} кг добавлены в корзину")
+        show_cart(vk, user_id); return
+
+    if state == "edge_plan_manual":
+        try:
+            n = int(text.strip())
+            if n < PLAN_MIN or n > PLAN_MAX: raise ValueError
+        except ValueError:
+            send(vk, user_id, f"❗ Число от {PLAN_MIN} до {PLAN_MAX}."); return
+        cart = list(data.get("cart", []))
+        try: register_plan(n)
+        except: pass
+        set_state(user_id, "edge_glue", cart=cart, plan=str(n), default_plan=str(n))
+        show_edge_glue_question(vk, user_id, n); return
+
     if state == "cart_qty":
         try:
             qty = float(text.replace(",", "."))
@@ -1817,6 +1963,12 @@ def handle_message(vk, user_id, text):
         cart = list(data.get("cart", []))
         idx = data.get("editing_index", len(cart) - 1)
         if 0 <= idx < len(cart): cart[idx]["qty"] = qty
+        m = get_material(cart[idx]["material_id"]) if 0 <= idx < len(cart) else None
+        if m and (m["category"] or "board") == "film":
+            cart[idx]["plan"] = ""
+            set_state(user_id, "cart", cart=cart,
+                      default_plan=data.get("default_plan", ""))
+            show_cart(vk, user_id); return
         set_state(user_id, "cart_plan", cart=cart, editing_index=idx,
                   default_plan=data.get("default_plan", ""))
         show_plan_page(vk, user_id, 1); return
