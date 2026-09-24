@@ -95,16 +95,16 @@ def init_db():
         # Служебные позиции для заявок на кромку
         now2 = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         r1 = con.execute("SELECT 1 FROM materials WHERE category='edge' AND hidden=1 "
-                         "AND LOWER(name)='кромка'").fetchone()
+                         "AND name='Кромка'").fetchone()
         if not r1:
             con.execute("INSERT INTO materials (category,name,unit,qty,thickness,decor,"
                         "hidden,updated_at) VALUES ('edge','Кромка','м',0,'','',1,?)",
                         (now2,))
         r2 = con.execute("SELECT 1 FROM materials WHERE category='edge' AND hidden=1 "
-                         "AND LOWER(name) LIKE '%клей%'").fetchone()
+                         "AND name='Клей кромочный'").fetchone()
         if not r2:
             con.execute("INSERT INTO materials (category,name,unit,qty,thickness,decor,"
-                        "hidden,updated_at) VALUES ('edge','Клей кромочный','кг',0,'','',1,?)",
+                        "hidden,updated_at) VALUES ('edge','Клей кромочный','канистра',0,'','',1,?)",
                         (now2,))
 
         if con.execute("SELECT COUNT(*) c FROM materials WHERE hidden=0").fetchone()["c"] == 0:
@@ -244,17 +244,35 @@ def material_label(m):
 
 def _find_edge_main():
     with db() as con:
-        row = con.execute("SELECT * FROM materials WHERE category='edge' "
-                          "AND hidden=1 AND LOWER(name)='кромка' LIMIT 1").fetchone()
-    return row
+        rows = con.execute("SELECT * FROM materials WHERE category='edge' "
+                           "AND hidden=1").fetchall()
+    for r in rows:
+        if (r["name"] or "").strip() == "Кромка":
+            return r
+    with db() as con:
+        con.execute("INSERT INTO materials (category,name,unit,qty,thickness,decor,"
+                    "hidden,updated_at) VALUES ('edge','Кромка','м',0,'','',1,?)",
+                    (now_str(),))
+        con.commit()
+        return con.execute("SELECT * FROM materials WHERE category='edge' AND hidden=1 "
+                           "AND name='Кромка' LIMIT 1").fetchone()
 
 
 def _find_edge_glue():
     with db() as con:
-        row = con.execute("SELECT * FROM materials WHERE category='edge' "
-                          "AND hidden=1 AND LOWER(name) LIKE '%клей%' "
-                          "ORDER BY id LIMIT 1").fetchone()
-    return row
+        rows = con.execute("SELECT * FROM materials WHERE category='edge' "
+                           "AND hidden=1").fetchall()
+    for r in rows:
+        nm = (r["name"] or "")
+        if "клей" in nm.lower():
+            return r
+    with db() as con:
+        con.execute("INSERT INTO materials (category,name,unit,qty,thickness,decor,"
+                    "hidden,updated_at) VALUES ('edge','Клей кромочный','канистра',0,'','',1,?)",
+                    (now_str(),))
+        con.commit()
+        return con.execute("SELECT * FROM materials WHERE category='edge' AND hidden=1 "
+                           "AND name='Клей кромочный' LIMIT 1").fetchone()
 
 
 def _add_edge_to_cart(cart, plan, glue_qty=None):
@@ -663,12 +681,14 @@ def show_cart(vk, user_id):
         qty = it["qty"]
         plan = it.get("plan") or "—"
         label = full_label(m) if m else "?"
-        is_hidden_edge = m and m["hidden"] and (m["category"] or "") == "edge"
-        if is_hidden_edge:
+        is_hidden = m and m["hidden"] and (m["category"] or "") == "edge"
+        is_edge_main = is_hidden and "клей" not in (m["name"] or "").lower()
+        if is_edge_main:
             lines.append(f"{i}. {label} (план {plan})")
         else:
             qty_str = f"{qty:g}" if qty is not None else "?"
-            lines.append(f"{i}. {label} — {qty_str} (план {plan})")
+            unit = (m["unit"] if m else "") or ""
+            lines.append(f"{i}. {label} — {qty_str} {unit} (план {plan})")
     kb = VkKeyboard(one_time=False)
     kb.add_callback_button("➕ Добавить", color=VkKeyboardColor.PRIMARY,
                            payload={"command": "cart_more"})
@@ -727,7 +747,9 @@ def show_edge_glue_question(vk, user_id, plan):
                            payload={"command": "edge_plan_again"})
     kb.add_line()
     kb.add_button("⬅️ В меню", color=VkKeyboardColor.SECONDARY)
-    send(vk, user_id, f"📏 Кромка, план {plan}.\n\nНужен кромочный клей?",
+    send(vk, user_id,
+         f"📏 Кромка, план {plan}.\n\n"
+         f"🧴 Кромочный клей нужен?",
          kb.get_keyboard())
 
 
@@ -847,7 +869,6 @@ def submit_cart(vk, user_id):
             notif.append(f"{i}. {full_label(m)} — {it['qty']:g} {m['unit']}")
         notify_board_and_warehouse(vk, "\n".join(notif))
     else:
-        # Проверяем — только ли кромка в заявке
         edge_only = True
         plan_card = ""
         glue_needed_card = False
@@ -865,7 +886,6 @@ def submit_cart(vk, user_id):
                 plan_card = it.get("plan") or ""
 
         if edge_only:
-            # Карточка-уведомление для кладовщика
             lines_n = [
                 f"📏 НОВАЯ ЗАЯВКА НА КРОМКУ №{rid}",
                 "",
@@ -874,17 +894,16 @@ def submit_cart(vk, user_id):
                 "",
             ]
             if glue_needed_card and glue_qty_card > 0:
-                lines_n.append(f"🧴 Клей кромочный: НУЖЕН, {glue_qty_card:g} кг")
+                lines_n.append(f"🧴 Клей кромочный: НУЖЕН, {glue_qty_card:g} канистр")
             else:
                 lines_n.append("🧴 Клей кромочный: НЕ НУЖЕН")
             lines_n += ["", "Откройте 📥 Заявки для подтверждения."]
             notify_warehouse(vk, "\n".join(lines_n))
 
-            # Автору — подтверждение
             lines = [f"✅ Заявка на кромку №{rid} отправлена", ""]
             lines.append(f"📋 План: {plan_card or '—'}")
             if glue_needed_card and glue_qty_card > 0:
-                lines.append(f"🧴 Клей кромочный: {glue_qty_card:g} кг")
+                lines.append(f"🧴 Клей кромочный: {glue_qty_card:g} канистр")
             else:
                 lines.append("🧴 Без клея")
             lines += ["", "Кладовщик подтвердит выдачу."]
@@ -895,7 +914,10 @@ def submit_cart(vk, user_id):
                 m = get_material(it["material_id"])
                 plan = it.get("plan") or "—"
                 if m and m["hidden"] and (m["category"] or "") == "edge":
-                    lines.append(f"{i}. {full_label(m)} (план {plan})")
+                    if "клей" in (m["name"] or "").lower():
+                        lines.append(f"{i}. {full_label(m)} — {it['qty']:g} {m['unit']} (план {plan})")
+                    else:
+                        lines.append(f"{i}. {full_label(m)} (план {plan})")
                 else:
                     lines.append(f"{i}. {full_label(m)} — {it['qty']:g} {m['unit']} (план {plan})")
             lines += ["", "Кладовщик подтвердит выдачу."]
@@ -905,7 +927,10 @@ def submit_cart(vk, user_id):
                 m = get_material(it["material_id"])
                 plan = it.get("plan") or "—"
                 if m and m["hidden"] and (m["category"] or "") == "edge":
-                    notif.append(f"{i}. {full_label(m)} (план {plan})")
+                    if "клей" in (m["name"] or "").lower():
+                        notif.append(f"{i}. {full_label(m)} — {it['qty']:g} {m['unit']} (план {plan})")
+                    else:
+                        notif.append(f"{i}. {full_label(m)} (план {plan})")
                 else:
                     notif.append(f"{i}. {full_label(m)} — {it['qty']:g} {m['unit']} (план {plan})")
             notif += ["", f"От: {author}"]
@@ -997,7 +1022,7 @@ def _render_edge_card(vk, user_id, r, items):
         "",
     ]
     if glue_needed and glue_qty > 0:
-        lines.append(f"🧴 Клей кромочный: НУЖЕН, {glue_qty:g} кг")
+        lines.append(f"🧴 Клей кромочный: НУЖЕН, {glue_qty:g} канистр")
     else:
         lines.append("🧴 Клей кромочный: НЕ НУЖЕН")
     lines += ["", f"Статус: {STATUS.get(r['status'], r['status'])}"]
@@ -1045,11 +1070,10 @@ def show_request_details(vk, user_id, rid):
             dec = it["m_decor"] or ""
             label = " ".join(p for p in [th, dec] if p) or name
             cat = it["m_cat"] or ""
-            is_hidden_edge = (cat == "edge"
-                              and (it["qty"] or 0) == 0
-                              and (name or "").lower().startswith("кромка")
-                              and not dec)
-            if is_hidden_edge:
+            is_hidden = (cat == "edge" and not th and not dec
+                         and (name or "").strip() in ("Кромка", "Клей кромочный"))
+            is_edge_main = is_hidden and "клей" not in (name or "").lower()
+            if is_edge_main:
                 lines.append(f"{i}. [{cat_word(cat)}] {label} (план {plan})")
             else:
                 warn = ""
@@ -1095,7 +1119,11 @@ def issue_request(vk, user_id, rid):
                 if not m:
                     summary.append(f"ID {it['material_id']} — удалён"); continue
                 if m["hidden"]:
-                    summary.append(f"{full_label(m)}")
+                    nm = (m["name"] or "").lower()
+                    if "клей" in nm:
+                        summary.append(f"{full_label(m)} — {it['qty']:g} {m['unit']}")
+                    else:
+                        summary.append(f"{full_label(m)}")
                     continue
                 new_qty = m["qty"] - it["qty"]
                 con.execute("UPDATE materials SET qty=?, updated_at=? WHERE id=?",
@@ -1542,7 +1570,7 @@ def _new_step_send(vk, uid, step):
     elif step == 4:
         send(vk, uid, "🔢 Шаг 4. Начальный остаток:", kb.get_keyboard())
     elif step == 5:
-        send(vk, uid, "📐 Шаг 5. Единица (шт, м, лист, кг). Или «-» для шт:",
+        send(vk, uid, "📐 Шаг 5. Единица (шт, м, лист, кг, канистра). Или «-» для шт:",
              kb.get_keyboard())
 
 
@@ -1848,7 +1876,7 @@ def handle_callback(vk, user_id, command):
         cart = list(st["data"].get("cart", []))
         plan = st["data"].get("plan", "")
         set_state(user_id, "edge_glue_qty", cart=cart, plan=plan)
-        send(vk, user_id, "🔢 Введите количество клея (кг):"); return
+        send(vk, user_id, "🔢 Сколько КАНИСТР клея нужно? Введите число:"); return
 
     # --- План для пиломатериалов ---
     if command.startswith("plan_page:"):
@@ -2099,7 +2127,8 @@ def handle_message(vk, user_id, text):
         plan = data.get("plan", "")
         _add_edge_to_cart(cart, plan, glue_qty=qty)
         set_state(user_id, "cart", cart=cart, default_plan=plan)
-        send(vk, user_id, f"✅ Кромка + клей {qty:g} кг добавлены в корзину")
+        send(vk, user_id,
+             f"✅ Кромка добавлена в корзину, клей — {qty:g} канистр")
         show_cart(vk, user_id); return
 
     if state == "edge_plan_manual":
