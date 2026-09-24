@@ -116,6 +116,10 @@ def is_warehouse(user_id):
     return get_role(user_id) in ("warehouse", "admin")
 
 
+def is_driver(user_id):
+    return get_role(user_id) in ("driver", "warehouse", "admin")
+
+
 def is_admin(user_id):
     return get_role(user_id) == "admin" or user_id in ADMIN_IDS
 
@@ -202,12 +206,13 @@ def main_menu(user_id):
     kb.add_line()
     kb.add_button("📦 Новая заявка", color=VkKeyboardColor.POSITIVE)
     kb.add_button("📄 Мои заявки", color=VkKeyboardColor.SECONDARY)
-    if role in ("warehouse", "admin"):
+    if role in ("driver", "warehouse", "admin"):
         kb.add_line()
-        kb.add_button("📥 Заявки станочников", color=VkKeyboardColor.POSITIVE)
+        kb.add_button("📥 Заявки", color=VkKeyboardColor.POSITIVE)
         kb.add_line()
         kb.add_button("➕ Приход", color=VkKeyboardColor.PRIMARY)
         kb.add_button("📦 Массовый приход", color=VkKeyboardColor.PRIMARY)
+    if role in ("warehouse", "admin"):
         kb.add_line()
         kb.add_button("🆕 Номенклатура", color=VkKeyboardColor.PRIMARY)
         kb.add_button("✏️ Редактировать", color=VkKeyboardColor.PRIMARY)
@@ -217,9 +222,9 @@ def main_menu(user_id):
         kb.add_line()
         kb.add_button("📊 Сводка", color=VkKeyboardColor.SECONDARY)
         kb.add_button("📋 Журнал", color=VkKeyboardColor.SECONDARY)
-        if role == "admin":
-            kb.add_line()
-            kb.add_button("👥 Пользователи", color=VkKeyboardColor.SECONDARY)
+    if role == "admin":
+        kb.add_line()
+        kb.add_button("👥 Пользователи", color=VkKeyboardColor.SECONDARY)
     return kb.get_keyboard()
 
 
@@ -261,7 +266,7 @@ def send(vk, user_id, text, keyboard=None):
 def notify_warehouse(vk, text):
     with db() as con:
         rows = con.execute("SELECT user_id FROM users "
-                           "WHERE role IN ('warehouse','admin') AND blocked=0").fetchall()
+                           "WHERE role IN ('driver','warehouse','admin') AND blocked=0").fetchall()
     for r in rows:
         try: send(vk, r["user_id"], text)
         except Exception: pass
@@ -278,10 +283,12 @@ HELP_TEXT = """📖 КОМАНДЫ БОТА
 📦 Новая заявка
 📄 Мои заявки
 
-Кладовщик:
-📥 Заявки станочников
+Водитель погрузчика:
+📥 Заявки
 ➕ Приход
 📦 Массовый приход
+
+Кладовщик:
 🆕 Номенклатура
 ✏️ Редактировать
 🗑 Удалить
@@ -292,6 +299,7 @@ HELP_TEXT = """📖 КОМАНДЫ БОТА
 Админ:
 /users — пользователи
 /setrole <ID> <роль>
+   роли: operator / driver / warehouse / admin
 /resetstock"""
 
 
@@ -467,87 +475,163 @@ def show_my_requests(vk, user_id):
     send(vk, user_id, "\n".join(lines), back_kb())
 
 
-def show_active_requests(vk, user_id):
+def show_active_requests(vk, user_id, page=1):
+    per_page = 8
     with db() as con:
-        rows = con.execute("SELECT r.*, u.full_name FROM requests r "
-                           "LEFT JOIN users u ON u.user_id=r.user_id "
-                           "WHERE r.status IN ('new','approved') ORDER BY r.id").fetchall()
-    if not rows:
+        total = con.execute("SELECT COUNT(*) c FROM requests "
+                            "WHERE status IN ('new','approved')").fetchone()["c"]
+    if total == 0:
         send(vk, user_id, "📥 Активных заявок нет.", back_kb()); return
-    send(vk, user_id, f"📥 Активных: {len(rows)}", back_kb())
-    for r in rows:
+
+    pages = (total + per_page - 1) // per_page
+    if page < 1: page = 1
+    if page > pages: page = pages
+    offset = (page - 1) * per_page
+
+    with db() as con:
+        rows = con.execute(
+            "SELECT r.*, u.full_name FROM requests r "
+            "LEFT JOIN users u ON u.user_id=r.user_id "
+            "WHERE r.status IN ('new','approved') "
+            "ORDER BY r.id DESC LIMIT ? OFFSET ?",
+            (per_page, offset)).fetchall()
+
+    is_adm = is_admin(user_id)
+    kb = VkKeyboard(one_time=False)
+    for i, r in enumerate(rows):
+        if i > 0: kb.add_line()
         with db() as con:
-            items = con.execute("SELECT ri.*, m.name AS m_name, m.unit AS m_unit "
-                                "FROM request_items ri LEFT JOIN materials m ON m.id=ri.material_id "
-                                "WHERE ri.request_id=?", (r["id"],)).fetchall()
-        if items:
-            body = "\n".join(f"   • {it['m_name'] or '?'} — {it['qty']:g} {it['m_unit'] or ''}"
-                             for it in items)
-        else:
-            m = get_material(r["material_id"])
-            body = f"   • {m['name'] if m else '?'} — {r['qty']:g}"
-        text_msg = (f"Заявка №{r['id']}\n{body}\n📋 План: {r['plan'] or '—'}\n"
-                    f"От: {r['full_name'] or r['user_id']}\n"
-                    f"Статус: {STATUS.get(r['status'], r['status'])}")
-        kb = VkKeyboard(one_time=False)
-        kb.add_callback_button("✅ Выдать", color=VkKeyboardColor.POSITIVE,
-                               payload={"command": f"wh_issue:{r['id']}"})
-        kb.add_callback_button("❌ Отклонить", color=VkKeyboardColor.NEGATIVE,
-                               payload={"command": f"wh_reject:{r['id']}"})
-        send(vk, user_id, text_msg, kb.get_keyboard())
+            cnt = con.execute("SELECT COUNT(*) c FROM request_items "
+                              "WHERE request_id=?", (r["id"],)).fetchone()["c"]
+        tag = f"{cnt} поз." if cnt else f"{r['qty']:g} шт"
+        author = (r["full_name"] or str(r["user_id"])).split()[0]
+        kb.add_callback_button(
+            f"№{r['id']} • {author} • {tag} • план {r['plan'] or '—'}",
+            color=VkKeyboardColor.PRIMARY,
+            payload={"command": f"req_view:{r['id']}"})
+
+    kb.add_line()
+    if page > 1:
+        kb.add_callback_button("◀️", color=VkKeyboardColor.SECONDARY,
+                               payload={"command": f"req_page:{page-1}"})
+    kb.add_callback_button(f"{page}/{pages}", color=VkKeyboardColor.SECONDARY,
+                           payload={"command": "noop"})
+    if page < pages:
+        kb.add_callback_button("▶️", color=VkKeyboardColor.SECONDARY,
+                               payload={"command": f"req_page:{page+1}"})
+    kb.add_line()
+    kb.add_button("⬅️ В меню", color=VkKeyboardColor.SECONDARY)
+
+    hint = "Выберите заявку:" if is_adm else "Заявки (только просмотр):"
+    send(vk, user_id, f"📥 Активных заявок: {total} (стр. {page}/{pages})\n\n{hint}",
+         kb.get_keyboard())
 
 
+def show_request_details(vk, user_id, rid):
+    with db() as con:
+        r = con.execute("SELECT * FROM requests WHERE id=?", (rid,)).fetchone()
+    if not r:
+        send(vk, user_id, "Заявка не найдена.", back_kb()); return
+
+    with db() as con:
+        items = con.execute(
+            "SELECT ri.*, m.name AS m_name, m.unit AS m_unit, m.qty AS stock "
+            "FROM request_items ri LEFT JOIN materials m ON m.id=ri.material_id "
+            "WHERE ri.request_id=?", (rid,)).fetchall()
+        author = con.execute("SELECT full_name FROM users WHERE user_id=?",
+                             (r["user_id"],)).fetchone()
+
+    lines = [f"📋 Заявка №{r['id']}", ""]
+    if items:
+        for i, it in enumerate(items, 1):
+            stock = it["stock"] if it["stock"] is not None else 0
+            warn = " ⚠️" if stock < it["qty"] else ""
+            lines.append(f"{i}. {it['m_name'] or '?'} — {it['qty']:g} "
+                         f"{it['m_unit'] or ''}{warn}")
+    else:
+        m = get_material(r["material_id"])
+        lines.append(f"• {m['name'] if m else '?'} — {r['qty']:g}")
+    lines += [
+        "",
+        f"📋 План: {r['plan'] or '—'}",
+        f"👤 От: {author['full_name'] if author else r['user_id']}",
+        f"🕒 {r['created_at'][:16]}",
+        f"Статус: {STATUS.get(r['status'], r['status'])}",
+    ]
+
+    kb = VkKeyboard(one_time=False)
+    if is_admin(user_id) and r["status"] in ("new", "approved"):
+        kb.add_callback_button("✅ Отдал", color=VkKeyboardColor.POSITIVE,
+                               payload={"command": f"wh_issue:{rid}"})
+        kb.add_callback_button("❌ Не отдал", color=VkKeyboardColor.NEGATIVE,
+                               payload={"command": f"wh_reject:{rid}"})
+        kb.add_line()
+    kb.add_callback_button("⬅️ К списку заявок", color=VkKeyboardColor.SECONDARY,
+                           payload={"command": "wh_requests"})
+    send(vk, user_id, "\n".join(lines), kb.get_keyboard())
+          
+
+# ======================= ОТМЕТКА АДМИНА: "ОТДАЛ" =======================
 def issue_request(vk, user_id, rid):
     with db() as con:
         r = con.execute("SELECT * FROM requests WHERE id=?", (rid,)).fetchone()
         if not r or r["status"] not in ("new", "approved"):
-            send(vk, user_id, "Заявка уже обработана.", back_kb()); return
+            send(vk, user_id, "Заявка уже отмечена.", back_kb()); return
         items = con.execute("SELECT * FROM request_items WHERE request_id=?",
                             (rid,)).fetchall()
+        summary, minus_lines = [], []
         if items:
             for it in items:
                 m = con.execute("SELECT * FROM materials WHERE id=?",
                                 (it["material_id"],)).fetchone()
-                if not m or m["qty"] < it["qty"]:
-                    send(vk, user_id, f"Не хватает (ID {it['material_id']}).", back_kb())
-                    return
-            summary = []
-            for it in items:
-                m = con.execute("SELECT * FROM materials WHERE id=?",
-                                (it["material_id"],)).fetchone()
-                con.execute("UPDATE materials SET qty=qty-?, updated_at=? WHERE id=?",
-                            (it["qty"], now_str(), m["id"]))
+                if not m:
+                    summary.append(f"ID {it['material_id']} — материал удалён")
+                    continue
+                new_qty = m["qty"] - it["qty"]
+                con.execute("UPDATE materials SET qty=?, updated_at=? WHERE id=?",
+                            (new_qty, now_str(), m["id"]))
                 summary.append(f"{m['name']} — {it['qty']:g} {m['unit']}")
+                if new_qty < 0:
+                    minus_lines.append(f"{m['name']}: {new_qty:g} {m['unit']}")
         else:
             m = con.execute("SELECT * FROM materials WHERE id=?",
                             (r["material_id"],)).fetchone()
-            if not m or m["qty"] < r["qty"]:
-                send(vk, user_id, "Не хватает материала.", back_kb()); return
-            con.execute("UPDATE materials SET qty=qty-?, updated_at=? WHERE id=?",
-                        (r["qty"], now_str(), m["id"]))
-            summary = [f"{m['name']} — {r['qty']:g} {m['unit']}"]
+            if m:
+                new_qty = m["qty"] - r["qty"]
+                con.execute("UPDATE materials SET qty=?, updated_at=? WHERE id=?",
+                            (new_qty, now_str(), m["id"]))
+                summary.append(f"{m['name']} — {r['qty']:g} {m['unit']}")
+                if new_qty < 0:
+                    minus_lines.append(f"{m['name']}: {new_qty:g} {m['unit']}")
         con.execute("UPDATE requests SET status='issued', updated_at=? WHERE id=?",
                     (now_str(), rid))
         con.commit()
-    log_action(user_id, f"Выдана заявка №{rid}", "; ".join(summary))
-    send(vk, user_id, f"✅ Заявка №{rid} выдана\n" + "\n".join(summary), back_kb())
-    try: send(vk, r["user_id"], f"✅ Заявка №{rid} выполнена:\n" + "\n".join(summary))
-    except: pass
+    log_action(user_id, f"Отдал заявку №{rid}", "; ".join(summary))
+    txt = f"✅ Заявка №{rid} — «Отдал»\n" + "\n".join(summary)
+    if minus_lines:
+        txt += "\n\n⚠️ Ушло в минус:\n" + "\n".join(minus_lines)
+    send(vk, user_id, txt)
+    try:
+        send(vk, r["user_id"], f"✅ Заявка №{rid} выполнена:\n" + "\n".join(summary))
+    except Exception:
+        pass
 
 
 def reject_request(vk, user_id, rid):
     with db() as con:
         r = con.execute("SELECT * FROM requests WHERE id=?", (rid,)).fetchone()
         if not r or r["status"] not in ("new", "approved"):
-            send(vk, user_id, "Заявка уже обработана.", back_kb()); return
+            send(vk, user_id, "Заявка уже отмечена.", back_kb()); return
         con.execute("UPDATE requests SET status='rejected', updated_at=? WHERE id=?",
                     (now_str(), rid))
         con.commit()
-    log_action(user_id, f"Отклонена заявка №{rid}")
-    send(vk, user_id, f"❌ Заявка №{rid} отклонена.", back_kb())
-    try: send(vk, r["user_id"], f"❌ Заявка №{rid} отклонена.")
-    except: pass
-        
+    log_action(user_id, f"Не отдал заявку №{rid}")
+    send(vk, user_id, f"❌ Заявка №{rid} — «Не отдал».")
+    try:
+        send(vk, r["user_id"], f"❌ Заявка №{rid} — не выдана.")
+    except Exception:
+        pass
+
 
 # ======================= ПРИХОД =======================
 def show_inc_list(vk, user_id, mass=False):
@@ -733,10 +817,10 @@ def show_stats(vk, user_id):
         us = con.execute("SELECT role, COUNT(*) c FROM users WHERE blocked=0 GROUP BY role").fetchall()
     lines = ["📊 СВОДКА СКЛАДА", "", f"📦 Материалов: {tm}",
              f"📊 Общий остаток: {tq:g}", "", f"📥 Активных: {ac}",
-             f"✅ Выдано: {isd}", f"❌ Отклонено: {rj}", "", "👥 Пользователи:"]
+             f"✅ Отдано: {isd}", f"❌ Не отдано: {rj}", "", "👥 Пользователи:"]
     for u in us:
-        rr = {"operator": "станочник", "warehouse": "кладовщик",
-              "admin": "админ"}.get(u["role"], u["role"])
+        rr = {"operator": "станочник", "driver": "водитель погрузчика",
+              "warehouse": "кладовщик", "admin": "админ"}.get(u["role"], u["role"])
         lines.append(f"   • {rr}: {u['c']}")
     send(vk, user_id, "\n".join(lines), back_kb())
 
@@ -765,8 +849,8 @@ def show_users(vk, user_id):
         send(vk, user_id, "Нет пользователей.", back_kb()); return
     lines = ["👥 ПОЛЬЗОВАТЕЛИ", ""]
     for r in rows:
-        rr = {"operator": "станочник", "warehouse": "кладовщик",
-              "admin": "админ"}.get(r["role"], r["role"])
+        rr = {"operator": "станочник", "driver": "водитель погрузчика",
+              "warehouse": "кладовщик", "admin": "админ"}.get(r["role"], r["role"])
         block = " 🚫" if r["blocked"] else ""
         lines.append(f"{r['full_name'] or r['user_id']} (id{r['user_id']})\n   {rr}{block}")
     send(vk, user_id, "\n".join(lines), back_kb())
@@ -785,6 +869,8 @@ def handle_callback(vk, user_id, command):
         clear_state(user_id); send(vk, user_id, "Главное меню:", main_menu(user_id)); return
     if command == "stock_refresh":
         send(vk, user_id, render_stock(), stock_kb()); return
+    if command == "noop":
+        return
 
     if command.startswith("cart_thick:"):
         th = command.split(":", 1)[1]
@@ -829,15 +915,38 @@ def handle_callback(vk, user_id, command):
                   plan=st["data"].get("plan", ""))
         send(vk, user_id, "🔢 Введите номер плана (1–2000):"); return
 
-    if not is_warehouse(user_id):
-        send(vk, user_id, "Нет доступа."); return
-
+    # --- список и карточки заявок ---
     if command == "wh_requests":
-        show_active_requests(vk, user_id); return
+        if not is_driver(user_id):
+            send(vk, user_id, "Нет доступа."); return
+        show_active_requests(vk, user_id, 1); return
+    if command.startswith("req_page:"):
+        if not is_driver(user_id):
+            send(vk, user_id, "Нет доступа."); return
+        page = int(command.split(":", 1)[1])
+        show_active_requests(vk, user_id, page); return
+    if command.startswith("req_view:"):
+        if not is_driver(user_id):
+            send(vk, user_id, "Нет доступа."); return
+        show_request_details(vk, user_id, int(command.split(":", 1)[1])); return
+
+    # --- отметки только админ ---
     if command.startswith("wh_issue:"):
-        issue_request(vk, user_id, int(command.split(":", 1)[1])); return
+        if not is_admin(user_id):
+            send(vk, user_id, "Нет доступа."); return
+        rid = int(command.split(":", 1)[1])
+        issue_request(vk, user_id, rid)
+        show_request_details(vk, user_id, rid); return
     if command.startswith("wh_reject:"):
-        reject_request(vk, user_id, int(command.split(":", 1)[1])); return
+        if not is_admin(user_id):
+            send(vk, user_id, "Нет доступа."); return
+        rid = int(command.split(":", 1)[1])
+        reject_request(vk, user_id, rid)
+        show_request_details(vk, user_id, rid); return
+
+    # --- приходы: driver/warehouse/admin ---
+    if not is_driver(user_id):
+        send(vk, user_id, "Нет доступа."); return
 
     if command.startswith("inc_mat:"):
         mid = int(command.split(":", 1)[1]); m = get_material(mid)
@@ -857,6 +966,11 @@ def handle_callback(vk, user_id, command):
         show_inc_list(vk, user_id, mass=True); return
     if command == "minc_done":
         finish_mass_inc(vk, user_id); return
+
+    # --- номенклатура: warehouse/admin ---
+    if not is_warehouse(user_id):
+        send(vk, user_id, "Нет доступа."); return
+
     if command == "edit_list":
         show_edit_list(vk, user_id); return
     if command.startswith("edit:"):
@@ -882,8 +996,8 @@ def handle_message(vk, user_id, text):
     if text == "/start" or text == "Начать" or "В меню" in text:
         clear_state(user_id)
         r = get_role(user_id)
-        rr = {"operator": "станочник", "warehouse": "кладовщик (погрузчик)",
-              "admin": "администратор"}.get(r, r)
+        rr = {"operator": "станочник", "driver": "водитель погрузчика",
+              "warehouse": "кладовщик", "admin": "администратор"}.get(r, r)
         send(vk, user_id, f"👋 Складской бот «Пиломатериалы»\n\n"
                           f"Вы вошли как: {rr}\n\nВыберите действие:", main_menu(user_id))
         return
@@ -898,8 +1012,10 @@ def handle_message(vk, user_id, text):
     if text.startswith("/setrole"):
         if not is_admin(user_id): send(vk, user_id, "Нет доступа."); return
         p = text.split()
-        if len(p) != 3 or p[2] not in ("operator", "warehouse", "admin"):
-            send(vk, user_id, "Использование: /setrole 123456789 warehouse"); return
+        if len(p) != 3 or p[2] not in ("operator", "driver", "warehouse", "admin"):
+            send(vk, user_id,
+                 "Использование: /setrole 123456789 driver\n"
+                 "Роли: operator, driver, warehouse, admin"); return
         with db() as con:
             con.execute("UPDATE users SET role=? WHERE user_id=?", (p[2], int(p[1])))
             con.commit()
@@ -991,9 +1107,8 @@ def handle_message(vk, user_id, text):
     if state == "new_qty":
         try:
             qty = float(text.replace(",", "."))
-            if qty < 0: raise ValueError
         except ValueError:
-            send(vk, user_id, "❗ Неотрицательное число."); return
+            send(vk, user_id, "❗ Число."); return
         set_state(user_id, "new_unit", thickness=data["thickness"],
                   decor=data["decor"], name=data["name"], qty=qty)
         send(vk, user_id, "📐 Шаг 5/5. Единица (шт, лист). Или «-» для шт."); return
@@ -1014,14 +1129,14 @@ def handle_message(vk, user_id, text):
         clear_state(user_id); show_thicknesses(vk, user_id); return
     if text == "📄 Мои заявки":
         show_my_requests(vk, user_id); return
-    if text == "📥 Заявки станочников":
-        if not is_warehouse(user_id): send(vk, user_id, "Нет доступа."); return
-        show_active_requests(vk, user_id); return
+    if text == "📥 Заявки":
+        if not is_driver(user_id): send(vk, user_id, "Нет доступа."); return
+        show_active_requests(vk, user_id, 1); return
     if text == "➕ Приход":
-        if not is_warehouse(user_id): send(vk, user_id, "Нет доступа."); return
+        if not is_driver(user_id): send(vk, user_id, "Нет доступа."); return
         show_inc_list(vk, user_id, mass=False); return
     if text == "📦 Массовый приход":
-        if not is_warehouse(user_id): send(vk, user_id, "Нет доступа."); return
+        if not is_driver(user_id): send(vk, user_id, "Нет доступа."); return
         set_state(user_id, "minc_choose", mass_cart=[])
         show_inc_list(vk, user_id, mass=True); return
     if text == "🆕 Номенклатура":
