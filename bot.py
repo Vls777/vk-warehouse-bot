@@ -277,7 +277,6 @@ def _find_edge_glue():
     with db() as con:
         rows = con.execute("SELECT * FROM materials WHERE category='edge' "
                            "AND hidden=1").fetchall()
-    # приоритет — unit='канистра'
     for r in rows:
         nm = (r["name"] or "").lower()
         if "клей" in nm and (r["unit"] or "").lower().startswith("канист"):
@@ -496,6 +495,16 @@ def notify_board_and_warehouse(vk, text):
     with db() as con:
         rows = con.execute("SELECT user_id FROM users "
                            "WHERE role IN ('driver','warehouse','admin') AND blocked=0").fetchall()
+    for r in rows:
+        try: send(vk, r["user_id"], text)
+        except Exception: pass
+
+
+def notify_drivers_only(vk, text):
+    """Только водителям — для уведомления «собрано, можно везти в цех»."""
+    with db() as con:
+        rows = con.execute("SELECT user_id FROM users "
+                           "WHERE role='driver' AND blocked=0").fetchall()
     for r in rows:
         try: send(vk, r["user_id"], text)
         except Exception: pass
@@ -1187,6 +1196,17 @@ def issue_request(vk, user_id, rid):
         send(vk, r["user_id"],
              f"✅ Заявка №{rid} выполнена (план {plan_str}):\n" + "\n".join(summary))
     except Exception: pass
+
+    # Уведомление водителям: заказ собран, можно везти в цех
+    lines_drv = [
+        f"🚚 Заказ №{rid} собран, можно увозить в цех",
+        "",
+        f"📋 План: {plan_str}",
+    ]
+    if summary:
+        lines_drv.append("")
+        lines_drv += summary
+    notify_drivers_only(vk, "\n".join(lines_drv))
 
 
 def reject_request(vk, user_id, rid):
