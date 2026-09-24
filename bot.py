@@ -42,7 +42,7 @@ def init_db():
                 created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS request_items (id INTEGER PRIMARY KEY AUTOINCREMENT,
                 request_id INTEGER NOT NULL, material_id INTEGER NOT NULL,
-                qty REAL NOT NULL, status TEXT NOT NULL DEFAULT 'new');
+                qty REAL NOT NULL, plan TEXT DEFAULT '', status TEXT NOT NULL DEFAULT 'new');
             CREATE TABLE IF NOT EXISTS logs (id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER, action TEXT NOT NULL, details TEXT, created_at TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS plans (number INTEGER PRIMARY KEY, used_at TEXT NOT NULL);
@@ -55,6 +55,8 @@ def init_db():
             con.execute("ALTER TABLE materials ADD COLUMN decor TEXT DEFAULT ''")
         if "plan" not in cols("requests"):
             con.execute("ALTER TABLE requests ADD COLUMN plan TEXT DEFAULT ''")
+        if "plan" not in cols("request_items"):
+            con.execute("ALTER TABLE request_items ADD COLUMN plan TEXT DEFAULT ''")
         if "blocked" not in cols("users"):
             con.execute("ALTER TABLE users ADD COLUMN blocked INTEGER NOT NULL DEFAULT 0")
         if con.execute("SELECT COUNT(*) c FROM materials").fetchone()["c"] == 0:
@@ -316,7 +318,7 @@ def show_thicknesses(vk, user_id):
     kb.add_line()
     kb.add_button("⬅️ В меню", color=VkKeyboardColor.SECONDARY)
     set_state(user_id, "cart_choose", cart=list(st["data"].get("cart", [])),
-              plan=st["data"].get("plan", ""))
+              default_plan=st["data"].get("default_plan", ""))
     send(vk, user_id, "📏 Шаг 1. Выберите толщину:", kb.get_keyboard())
 
 
@@ -326,7 +328,7 @@ def show_decors_for_cart(vk, user_id, th):
         send(vk, user_id, f"Для толщины {th} нет позиций.", main_menu(user_id)); return
     st = get_state(user_id)
     cart = list(st["data"].get("cart", []))
-    plan = st["data"].get("plan", "")
+    default_plan = st["data"].get("default_plan", "")
     kb = VkKeyboard(one_time=False)
     for i, m in enumerate(rows):
         if i > 0: kb.add_line()
@@ -336,12 +338,15 @@ def show_decors_for_cart(vk, user_id, th):
                                payload={"command": f"cart_add:{m['id']}"})
     kb.add_line()
     if cart:
-        kb.add_callback_button("🛒 Показать корзину", color=VkKeyboardColor.POSITIVE,
+        kb.add_callback_button("🛒 Корзина", color=VkKeyboardColor.POSITIVE,
                                payload={"command": "cart_show"})
         kb.add_line()
+    kb.add_callback_button("⬅️ К толщинам", color=VkKeyboardColor.SECONDARY,
+                           payload={"command": "cart_back_thick"})
+    kb.add_line()
     kb.add_button("⬅️ В меню", color=VkKeyboardColor.SECONDARY)
-    set_state(user_id, "cart_choose", cart=cart, plan=plan, thickness=th)
-    send(vk, user_id, f"🎨 Шаг 2. Толщина {th}. Выберите декор:", kb.get_keyboard())
+    set_state(user_id, "cart_choose", cart=cart, default_plan=default_plan, thickness=th)
+    send(vk, user_id, f"🎨 Толщина {th}. Выберите декор:", kb.get_keyboard())
 
 
 def add_to_cart(vk, user_id, mid):
@@ -350,29 +355,35 @@ def add_to_cart(vk, user_id, mid):
         send(vk, user_id, "Материал не найден."); return
     st = get_state(user_id)
     cart = list(st["data"].get("cart", []))
-    plan = st["data"].get("plan", "")
-    cart.append({"material_id": mid, "qty": None})
-    set_state(user_id, "cart_qty", cart=cart, plan=plan, editing_index=len(cart) - 1)
-    send(vk, user_id, f"🛒 Добавлено: {m['name']}\nОстаток: {m['qty']:g} {m['unit']}\n\n"
-                      f"Введите количество (число):")
+    default_plan = st["data"].get("default_plan", "")
+    cart.append({"material_id": mid, "qty": None, "plan": default_plan or None})
+    idx = len(cart) - 1
+    set_state(user_id, "cart_qty", cart=cart, editing_index=idx,
+              default_plan=default_plan)
+    kb = VkKeyboard(one_time=False)
+    kb.add_callback_button("⬅️ Назад к декору", color=VkKeyboardColor.SECONDARY,
+                           payload={"command": "cart_back_decor"})
+    kb.add_line()
+    kb.add_button("⬅️ В меню", color=VkKeyboardColor.SECONDARY)
+    send(vk, user_id,
+         f"🛒 Добавлено: {m['name']}\nОстаток: {m['qty']:g} {m['unit']}\n\n"
+         f"Введите количество:", kb.get_keyboard())
 
 
 def show_cart(vk, user_id):
     st = get_state(user_id)
     cart = st["data"].get("cart", [])
-    plan = st["data"].get("plan", "")
     if not cart:
         send(vk, user_id, "Корзина пуста.", main_menu(user_id)); return
     lines = ["🛒 ВАША ЗАЯВКА", ""]
     for i, it in enumerate(cart, 1):
         m = get_material(it["material_id"])
         qty = it["qty"]
-        lines.append(f"{i}. {m['name'] if m else '?'} — {qty:g}" if qty else
-                     f"{i}. {m['name'] if m else '?'} — ?")
-    if plan:
-        lines.append(""); lines.append(f"📋 План: {plan}")
+        qty_str = f"{qty:g}" if qty is not None else "?"
+        plan = it.get("plan") or "—"
+        lines.append(f"{i}. {m['name'] if m else '?'} — {qty_str} (план {plan})")
     kb = VkKeyboard(one_time=False)
-    kb.add_callback_button("➕ Добавить ещё", color=VkKeyboardColor.PRIMARY,
+    kb.add_callback_button("➕ Добавить", color=VkKeyboardColor.PRIMARY,
                            payload={"command": "cart_more"})
     kb.add_callback_button("🗑 Очистить", color=VkKeyboardColor.NEGATIVE,
                            payload={"command": "cart_clear"})
@@ -387,10 +398,11 @@ def show_cart(vk, user_id):
 def show_plan_page(vk, user_id, page=1):
     items, base = plan_page_items(page)
     if not items:
-        send(vk, user_id, "Нет номеров в этом диапазоне."); return
+        send(vk, user_id, "Нет номеров."); return
     last = last_plan_number()
-    hint = f"Последний план: {last}" if last else "Раньше планов не было"
     st = get_state(user_id)
+    default_plan = st["data"].get("default_plan", "")
+    hint = f"Последний план: {last}" if last else "Раньше планов не было"
     kb = VkKeyboard(one_time=False)
     for i, n in enumerate(items):
         if i % 2 == 0 and i > 0: kb.add_line()
@@ -406,52 +418,66 @@ def show_plan_page(vk, user_id, page=1):
     kb.add_line()
     kb.add_callback_button("🔢 Вручную", color=VkKeyboardColor.PRIMARY,
                            payload={"command": "plan_manual"})
+    if default_plan:
+        kb.add_callback_button(f"⏭ План {default_plan}",
+                               color=VkKeyboardColor.POSITIVE,
+                               payload={"command": "plan_skip"})
+    kb.add_line()
+    kb.add_callback_button("⬅️ В корзину", color=VkKeyboardColor.SECONDARY,
+                           payload={"command": "cart_show"})
     kb.add_line()
     kb.add_button("⬅️ В меню", color=VkKeyboardColor.SECONDARY)
-    set_state(user_id, "choose_plan", cart=list(st["data"].get("cart", [])),
-              plan=st["data"].get("plan", ""), page=page)
-    send(vk, user_id, f"📋 Шаг 3. Выберите план.\n{hint}\n"
-                      f"Диапазон {items[0]}–{items[-1]} ({page}-я страница).",
-         kb.get_keyboard())
+    set_state(user_id, "cart_plan", cart=list(st["data"].get("cart", [])),
+              default_plan=default_plan, page=page,
+              editing_index=st["data"].get("editing_index", -1))
+    send(vk, user_id, f"📋 Шаг 3. Выберите план для позиции.\n{hint}\n"
+                      f"Диапазон {items[0]}–{items[-1]}.", kb.get_keyboard())
 
 
 def submit_cart(vk, user_id):
     st = get_state(user_id)
     cart = st["data"].get("cart", [])
-    plan = st["data"].get("plan", "")
     if not cart:
         send(vk, user_id, "Корзина пуста.", main_menu(user_id)); return
+    default_plan = st["data"].get("default_plan", "")
     for it in cart:
         if it["qty"] is None or it["qty"] <= 0:
             send(vk, user_id, "❗ У некоторых позиций не указано количество."); return
+        if not it.get("plan") and default_plan:
+            it["plan"] = default_plan
+    plans = sorted({str(it.get("plan") or "") for it in cart if it.get("plan")})
+    plan_str = ", ".join(plans) if plans else ""
     with db() as con:
         cur = con.execute("INSERT INTO requests (user_id,material_id,qty,plan,comment,"
                           "status,created_at,updated_at) VALUES (?,?,?,?,?,'new',?,?)",
                           (user_id, cart[0]["material_id"],
-                           sum(i["qty"] for i in cart), plan, "", now_str(), now_str()))
+                           sum(i["qty"] for i in cart), plan_str, "", now_str(), now_str()))
         rid = cur.lastrowid
         for it in cart:
-            con.execute("INSERT INTO request_items (request_id,material_id,qty,status) "
-                        "VALUES (?,?,?,'new')", (rid, it["material_id"], it["qty"]))
+            con.execute("INSERT INTO request_items (request_id,material_id,qty,plan,status) "
+                        "VALUES (?,?,?,?,'new')",
+                        (rid, it["material_id"], it["qty"], it.get("plan") or ""))
         con.commit()
     clear_state(user_id)
-    log_action(user_id, f"Создана заявка №{rid}", f"{len(cart)} поз., план={plan}")
-    if plan:
-        try: register_plan(int(plan))
-        except: pass
+    log_action(user_id, f"Создана заявка №{rid}", f"{len(cart)} поз., планы: {plan_str}")
+    for it in cart:
+        if it.get("plan"):
+            try: register_plan(int(it["plan"]))
+            except: pass
     lines = [f"✅ Заявка №{rid} отправлена", ""]
     for i, it in enumerate(cart, 1):
         m = get_material(it["material_id"])
-        lines.append(f"{i}. {m['name']} — {it['qty']:g} {m['unit']}")
-    lines.append(""); lines.append(f"📋 План: {plan or '—'}")
+        plan = it.get("plan") or "—"
+        lines.append(f"{i}. {m['name']} — {it['qty']:g} {m['unit']} (план {plan})")
     send(vk, user_id, "\n".join(lines), main_menu(user_id))
     user = get_user(user_id)
     author = user["full_name"] if user else str(user_id)
     notif = [f"🔔 Новая заявка №{rid}", ""]
     for i, it in enumerate(cart, 1):
         m = get_material(it["material_id"])
-        notif.append(f"{i}. {m['name']} — {it['qty']:g} {m['unit']}")
-    notif += ["", f"📋 План: {plan or '—'}", f"От: {author}"]
+        plan = it.get("plan") or "—"
+        notif.append(f"{i}. {m['name']} — {it['qty']:g} {m['unit']} (план {plan})")
+    notif += ["", f"От: {author}"]
     notify_warehouse(vk, "\n".join(notif))
 
 
@@ -506,7 +532,7 @@ def show_active_requests(vk, user_id, page=1):
         tag = f"{cnt} поз." if cnt else f"{r['qty']:g} шт"
         author = (r["full_name"] or str(r["user_id"])).split()[0]
         kb.add_callback_button(
-            f"№{r['id']} • {author} • {tag} • план {r['plan'] or '—'}",
+            f"№{r['id']} • {author} • {tag} • {r['plan'] or '—'}",
             color=VkKeyboardColor.PRIMARY,
             payload={"command": f"req_view:{r['id']}"})
 
@@ -523,7 +549,7 @@ def show_active_requests(vk, user_id, page=1):
     kb.add_button("⬅️ В меню", color=VkKeyboardColor.SECONDARY)
 
     hint = "Выберите заявку:" if is_adm else "Заявки (только просмотр):"
-    send(vk, user_id, f"📥 Активных заявок: {total} (стр. {page}/{pages})\n\n{hint}",
+    send(vk, user_id, f"📥 Активных: {total} (стр. {page}/{pages})\n\n{hint}",
          kb.get_keyboard())
 
 
@@ -532,7 +558,6 @@ def show_request_details(vk, user_id, rid):
         r = con.execute("SELECT * FROM requests WHERE id=?", (rid,)).fetchone()
     if not r:
         send(vk, user_id, "Заявка не найдена.", back_kb()); return
-
     with db() as con:
         items = con.execute(
             "SELECT ri.*, m.name AS m_name, m.unit AS m_unit, m.qty AS stock "
@@ -540,25 +565,22 @@ def show_request_details(vk, user_id, rid):
             "WHERE ri.request_id=?", (rid,)).fetchall()
         author = con.execute("SELECT full_name FROM users WHERE user_id=?",
                              (r["user_id"],)).fetchone()
-
     lines = [f"📋 Заявка №{r['id']}", ""]
     if items:
         for i, it in enumerate(items, 1):
             stock = it["stock"] if it["stock"] is not None else 0
             warn = " ⚠️" if stock < it["qty"] else ""
+            plan = it["plan"] if "plan" in it.keys() and it["plan"] else "—"
             lines.append(f"{i}. {it['m_name'] or '?'} — {it['qty']:g} "
-                         f"{it['m_unit'] or ''}{warn}")
+                         f"{it['m_unit'] or ''} (план {plan}){warn}")
     else:
         m = get_material(r["material_id"])
         lines.append(f"• {m['name'] if m else '?'} — {r['qty']:g}")
-    lines += [
-        "",
-        f"📋 План: {r['plan'] or '—'}",
-        f"👤 От: {author['full_name'] if author else r['user_id']}",
-        f"🕒 {r['created_at'][:16]}",
-        f"Статус: {STATUS.get(r['status'], r['status'])}",
-    ]
-
+    lines += ["",
+              f"📋 План(ы): {r['plan'] or '—'}",
+              f"👤 От: {author['full_name'] if author else r['user_id']}",
+              f"🕒 {r['created_at'][:16]}",
+              f"Статус: {STATUS.get(r['status'], r['status'])}"]
     kb = VkKeyboard(one_time=False)
     if is_admin(user_id) and r["status"] in ("new", "approved"):
         kb.add_callback_button("✅ Отдал", color=VkKeyboardColor.POSITIVE,
@@ -566,12 +588,12 @@ def show_request_details(vk, user_id, rid):
         kb.add_callback_button("❌ Не отдал", color=VkKeyboardColor.NEGATIVE,
                                payload={"command": f"wh_reject:{rid}"})
         kb.add_line()
-    kb.add_callback_button("⬅️ К списку заявок", color=VkKeyboardColor.SECONDARY,
+    kb.add_callback_button("⬅️ К списку", color=VkKeyboardColor.SECONDARY,
                            payload={"command": "wh_requests"})
     send(vk, user_id, "\n".join(lines), kb.get_keyboard())
           
 
-# ======================= ОТМЕТКА АДМИНА: "ОТДАЛ" =======================
+# ======================= ОТМЕТКА АДМИНА =======================
 def issue_request(vk, user_id, rid):
     with db() as con:
         r = con.execute("SELECT * FROM requests WHERE id=?", (rid,)).fetchone()
@@ -585,8 +607,7 @@ def issue_request(vk, user_id, rid):
                 m = con.execute("SELECT * FROM materials WHERE id=?",
                                 (it["material_id"],)).fetchone()
                 if not m:
-                    summary.append(f"ID {it['material_id']} — материал удалён")
-                    continue
+                    summary.append(f"ID {it['material_id']} — удалён"); continue
                 new_qty = m["qty"] - it["qty"]
                 con.execute("UPDATE materials SET qty=?, updated_at=? WHERE id=?",
                             (new_qty, now_str(), m["id"]))
@@ -613,8 +634,7 @@ def issue_request(vk, user_id, rid):
     send(vk, user_id, txt)
     try:
         send(vk, r["user_id"], f"✅ Заявка №{rid} выполнена:\n" + "\n".join(summary))
-    except Exception:
-        pass
+    except Exception: pass
 
 
 def reject_request(vk, user_id, rid):
@@ -629,8 +649,7 @@ def reject_request(vk, user_id, rid):
     send(vk, user_id, f"❌ Заявка №{rid} — «Не отдал».")
     try:
         send(vk, r["user_id"], f"❌ Заявка №{rid} — не выдана.")
-    except Exception:
-        pass
+    except Exception: pass
 
 
 # ======================= ПРИХОД =======================
@@ -772,8 +791,7 @@ def show_delete_confirm(vk, user_id, mid):
     kb.add_callback_button("❌ Отмена", color=VkKeyboardColor.SECONDARY,
                            payload={"command": "del_list"})
     send(vk, user_id, f"🗑 Удалить материал?\n\n📦 {m['name']}\n"
-                      f"Остаток: {m['qty']:g} {m['unit']}\n\n"
-                      f"⚠️ Связанные заявки тоже удалятся.", kb.get_keyboard())
+                      f"Остаток: {m['qty']:g} {m['unit']}", kb.get_keyboard())
 
 
 def delete_material(vk, user_id, mid):
@@ -876,7 +894,7 @@ def handle_callback(vk, user_id, command):
         th = command.split(":", 1)[1]
         st = get_state(user_id)
         set_state(user_id, "cart_choose", cart=list(st["data"].get("cart", [])),
-                  plan=st["data"].get("plan", ""), thickness=th)
+                  default_plan=st["data"].get("default_plan", ""), thickness=th)
         show_decors_for_cart(vk, user_id, th); return
     if command.startswith("cart_add:"):
         add_to_cart(vk, user_id, int(command.split(":", 1)[1])); return
@@ -884,19 +902,44 @@ def handle_callback(vk, user_id, command):
         show_cart(vk, user_id); return
     if command == "cart_more":
         st = get_state(user_id)
-        set_state(user_id, "cart_choose", cart=list(st["data"].get("cart", [])),
-                  plan=st["data"].get("plan", ""))
+        set_state(user_id, "cart_choose",
+                  cart=list(st["data"].get("cart", [])),
+                  default_plan=st["data"].get("default_plan", ""))
         show_thicknesses(vk, user_id); return
     if command == "cart_clear":
         clear_state(user_id); send(vk, user_id, "🛒 Корзина очищена.", main_menu(user_id)); return
     if command == "cart_submit":
         submit_cart(vk, user_id); return
 
+    if command == "cart_back_thick":
+        st = get_state(user_id)
+        set_state(user_id, "cart_choose", cart=list(st["data"].get("cart", [])),
+                  default_plan=st["data"].get("default_plan", ""))
+        show_thicknesses(vk, user_id); return
+    if command == "cart_back_decor":
+        st = get_state(user_id)
+        cart = list(st["data"].get("cart", []))
+        idx = st["data"].get("editing_index", len(cart) - 1)
+        if 0 <= idx < len(cart) and cart[idx].get("qty") is None:
+            cart.pop(idx)
+        set_state(user_id, "cart_choose", cart=cart,
+                  default_plan=st["data"].get("default_plan", ""))
+        th = None
+        if cart:
+            m = get_material(cart[-1]["material_id"])
+            th = m["thickness"] if m else None
+        if th:
+            show_decors_for_cart(vk, user_id, th)
+        else:
+            show_thicknesses(vk, user_id)
+        return
+
     if command.startswith("plan_page:"):
         page = int(command.split(":", 1)[1])
         st = get_state(user_id)
-        set_state(user_id, "choose_plan", cart=list(st["data"].get("cart", [])),
-                  plan=st["data"].get("plan", ""), page=page)
+        set_state(user_id, "cart_plan", cart=list(st["data"].get("cart", [])),
+                  default_plan=st["data"].get("default_plan", ""),
+                  page=page, editing_index=st["data"].get("editing_index", -1))
         show_plan_page(vk, user_id, page); return
     if command.startswith("plan_pick:"):
         n = int(command.split(":", 1)[1])
@@ -904,18 +947,34 @@ def handle_callback(vk, user_id, command):
         cart = list(st["data"].get("cart", []))
         if not cart:
             send(vk, user_id, "Корзина пуста.", main_menu(user_id)); return
-        set_state(user_id, "cart", cart=cart, plan=str(n))
+        idx = st["data"].get("editing_index", len(cart) - 1)
+        if 0 <= idx < len(cart) and cart[idx].get("qty") is None:
+            cart[idx]["plan"] = str(n)
+        else:
+            for it in cart:
+                if not it.get("plan"):
+                    it["plan"] = str(n)
         try: register_plan(n)
         except: pass
-        send(vk, user_id, f"✅ План: {n}")
+        set_state(user_id, "cart", cart=cart, default_plan=str(n))
+        send(vk, user_id, f"✅ План {n}")
+        show_cart(vk, user_id); return
+    if command == "plan_skip":
+        st = get_state(user_id)
+        cart = list(st["data"].get("cart", []))
+        default_plan = st["data"].get("default_plan", "")
+        idx = st["data"].get("editing_index", len(cart) - 1)
+        if default_plan and 0 <= idx < len(cart):
+            cart[idx]["plan"] = default_plan
+        set_state(user_id, "cart", cart=cart, default_plan=default_plan)
         show_cart(vk, user_id); return
     if command == "plan_manual":
         st = get_state(user_id)
         set_state(user_id, "plan_manual", cart=list(st["data"].get("cart", [])),
-                  plan=st["data"].get("plan", ""))
+                  default_plan=st["data"].get("default_plan", ""),
+                  editing_index=st["data"].get("editing_index", -1))
         send(vk, user_id, "🔢 Введите номер плана (1–2000):"); return
 
-    # --- список и карточки заявок ---
     if command == "wh_requests":
         if not is_driver(user_id):
             send(vk, user_id, "Нет доступа."); return
@@ -929,8 +988,6 @@ def handle_callback(vk, user_id, command):
         if not is_driver(user_id):
             send(vk, user_id, "Нет доступа."); return
         show_request_details(vk, user_id, int(command.split(":", 1)[1])); return
-
-    # --- отметки только админ ---
     if command.startswith("wh_issue:"):
         if not is_admin(user_id):
             send(vk, user_id, "Нет доступа."); return
@@ -944,7 +1001,6 @@ def handle_callback(vk, user_id, command):
         reject_request(vk, user_id, rid)
         show_request_details(vk, user_id, rid); return
 
-    # --- приходы: driver/warehouse/admin ---
     if not is_driver(user_id):
         send(vk, user_id, "Нет доступа."); return
 
@@ -967,7 +1023,6 @@ def handle_callback(vk, user_id, command):
     if command == "minc_done":
         finish_mass_inc(vk, user_id); return
 
-    # --- номенклатура: warehouse/admin ---
     if not is_warehouse(user_id):
         send(vk, user_id, "Нет доступа."); return
 
@@ -1035,7 +1090,8 @@ def handle_message(vk, user_id, text):
         cart = list(data.get("cart", []))
         idx = data.get("editing_index", len(cart) - 1)
         if 0 <= idx < len(cart): cart[idx]["qty"] = qty
-        set_state(user_id, "cart", cart=cart, plan=data.get("plan", ""))
+        set_state(user_id, "cart_plan", cart=cart, editing_index=idx,
+                  default_plan=data.get("default_plan", ""))
         show_plan_page(vk, user_id, 1); return
 
     if state == "plan_manual":
@@ -1044,9 +1100,17 @@ def handle_message(vk, user_id, text):
             if n < PLAN_MIN or n > PLAN_MAX: raise ValueError
         except ValueError:
             send(vk, user_id, f"❗ Число от {PLAN_MIN} до {PLAN_MAX}."); return
-        set_state(user_id, "cart", cart=data.get("cart", []), plan=str(n))
+        cart = list(data.get("cart", []))
+        idx = data.get("editing_index", len(cart) - 1)
+        if 0 <= idx < len(cart) and cart[idx].get("qty") is None:
+            cart[idx]["plan"] = str(n)
+        else:
+            for it in cart:
+                if not it.get("plan"):
+                    it["plan"] = str(n)
         try: register_plan(n)
         except: pass
+        set_state(user_id, "cart", cart=cart, default_plan=str(n))
         send(vk, user_id, f"✅ План: {n}")
         show_cart(vk, user_id); return
 
