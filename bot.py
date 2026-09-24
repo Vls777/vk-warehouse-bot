@@ -89,7 +89,25 @@ def init_db():
             con.execute("ALTER TABLE request_items ADD COLUMN plan TEXT DEFAULT ''")
         if "blocked" not in cols("users"):
             con.execute("ALTER TABLE users ADD COLUMN blocked INTEGER NOT NULL DEFAULT 0")
-        if con.execute("SELECT COUNT(*) c FROM materials").fetchone()["c"] == 0:
+        if "hidden" not in cols("materials"):
+            con.execute("ALTER TABLE materials ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0")
+
+        # Служебные позиции для заявок на кромку
+        now2 = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        r1 = con.execute("SELECT 1 FROM materials WHERE category='edge' AND hidden=1 "
+                         "AND LOWER(name)='кромка'").fetchone()
+        if not r1:
+            con.execute("INSERT INTO materials (category,name,unit,qty,thickness,decor,"
+                        "hidden,updated_at) VALUES ('edge','Кромка','м',0,'','',1,?)",
+                        (now2,))
+        r2 = con.execute("SELECT 1 FROM materials WHERE category='edge' AND hidden=1 "
+                         "AND LOWER(name) LIKE '%клей%'").fetchone()
+        if not r2:
+            con.execute("INSERT INTO materials (category,name,unit,qty,thickness,decor,"
+                        "hidden,updated_at) VALUES ('edge','Клей кромочный','кг',0,'','',1,?)",
+                        (now2,))
+
+        if con.execute("SELECT COUNT(*) c FROM materials WHERE hidden=0").fetchone()["c"] == 0:
             now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             seed = [
                 ("board", "Доска 10мм Дуб",   "шт", 120, "10мм", "Дуб"),
@@ -102,11 +120,6 @@ def init_db():
                 ("board", "Доска 22мм Венге", "шт",  50, "22мм", "Венге"),
                 ("board", "Доска 22мм Клён",  "шт",  40, "22мм", "Клён"),
                 ("board", "ЛДСП 22мм Тефия",  "лист", 30, "22мм", "Тефия"),
-                ("edge",  "Кромка Дуб",       "м",  200, "",     "Дуб"),
-                ("edge",  "Кромка Орех",      "м",  150, "",     "Орех"),
-                ("edge",  "Кромка Венге",     "м",  120, "",     "Венге"),
-                ("edge",  "Кромка Ясень",     "м",   80, "",     "Ясень"),
-                ("edge",  "Клей кромочный Клейберит 501", "кг", 20, "", "Клейберит 501"),
                 ("film",  "Плёнка Красный",   "м",  300, "",     "Красный"),
                 ("film",  "Плёнка Белый",     "м",  250, "",     "Белый"),
                 ("film",  "Плёнка Венге",     "м",  180, "",     "Венге"),
@@ -182,12 +195,14 @@ def get_material(mid):
 
 def all_materials():
     with db() as con:
-        return con.execute("SELECT * FROM materials ORDER BY category,thickness,decor,name").fetchall()
+        return con.execute("SELECT * FROM materials WHERE COALESCE(hidden,0)=0 "
+                           "ORDER BY category,thickness,decor,name").fetchall()
 
 
 def distinct_categories():
     with db() as con:
-        rows = con.execute("SELECT DISTINCT category FROM materials").fetchall()
+        rows = con.execute("SELECT DISTINCT category FROM materials "
+                           "WHERE COALESCE(hidden,0)=0").fetchall()
     seen = []
     for r in rows:
         c = r["category"] or "board"
@@ -199,7 +214,8 @@ def distinct_categories():
 def thicknesses_by_category(cat):
     with db() as con:
         rows = con.execute("SELECT DISTINCT thickness FROM materials "
-                           "WHERE category=? AND COALESCE(thickness,'')!='' "
+                           "WHERE category=? AND COALESCE(hidden,0)=0 "
+                           "AND COALESCE(thickness,'')!='' "
                            "ORDER BY thickness", (cat,)).fetchall()
     return [r["thickness"] for r in rows]
 
@@ -208,12 +224,15 @@ def materials_by_category(cat, th=None):
     with db() as con:
         if th is None:
             return con.execute("SELECT * FROM materials WHERE category=? "
+                               "AND COALESCE(hidden,0)=0 "
                                "ORDER BY decor, name", (cat,)).fetchall()
         if th == "__none__":
             return con.execute("SELECT * FROM materials WHERE category=? "
+                               "AND COALESCE(hidden,0)=0 "
                                "AND COALESCE(thickness,'')='' "
                                "ORDER BY decor, name", (cat,)).fetchall()
         return con.execute("SELECT * FROM materials WHERE category=? "
+                           "AND COALESCE(hidden,0)=0 "
                            "AND COALESCE(thickness,'')=? ORDER BY decor, name",
                            (cat, th)).fetchall()
 
@@ -226,15 +245,14 @@ def material_label(m):
 def _find_edge_main():
     with db() as con:
         row = con.execute("SELECT * FROM materials WHERE category='edge' "
-                          "AND LOWER(name) NOT LIKE '%клей%' "
-                          "ORDER BY id LIMIT 1").fetchone()
+                          "AND hidden=1 AND LOWER(name)='кромка' LIMIT 1").fetchone()
     return row
 
 
 def _find_edge_glue():
     with db() as con:
         row = con.execute("SELECT * FROM materials WHERE category='edge' "
-                          "AND LOWER(name) LIKE '%клей%' "
+                          "AND hidden=1 AND LOWER(name) LIKE '%клей%' "
                           "ORDER BY id LIMIT 1").fetchone()
     return row
 
@@ -243,7 +261,7 @@ def _add_edge_to_cart(cart, plan, glue_qty=None):
     edge = _find_edge_main()
     glue = _find_edge_glue()
     if edge:
-        cart.append({"material_id": edge["id"], "qty": 1, "plan": plan})
+        cart.append({"material_id": edge["id"], "qty": 0, "plan": plan})
     if glue_qty and glue:
         cart.append({"material_id": glue["id"], "qty": glue_qty, "plan": plan})
 
@@ -277,9 +295,32 @@ def _all_board(cart):
     for it in cart:
         m = get_material(it["material_id"])
         if not m: return False
-        if (m["category"] or "board") != "board":
+        if (m["category"] or "board") != "board" or m["hidden"]:
             return False
     return True
+
+
+def _is_edge_only_request(items):
+    if not items: return False
+    for it in items:
+        if not it["m_cat"] or it["m_cat"] != "edge":
+            return False
+    return True
+
+
+def _edge_request_data(items):
+    plan = ""
+    glue_needed = False
+    glue_qty = 0.0
+    for it in items:
+        name = (it["m_name"] or "").lower()
+        if "клей" in name:
+            glue_needed = True
+            glue_qty = float(it["qty"] or 0)
+        else:
+            if it["plan"]:
+                plan = it["plan"]
+    return plan, glue_needed, glue_qty
 
 
 def register_plan(n):
@@ -482,7 +523,8 @@ def show_thicknesses_for_cart(vk, user_id, cat):
     with db() as con:
         no_th = con.execute(
             "SELECT COUNT(*) c FROM materials WHERE category=? "
-            "AND COALESCE(thickness,'')=''", (cat,)).fetchone()["c"]
+            "AND COALESCE(hidden,0)=0 AND COALESCE(thickness,'')=''",
+            (cat,)).fetchone()["c"]
     if not ths and no_th == 0:
         send(vk, user_id, "Нет материалов.", main_menu(user_id)); return
     st = get_state(user_id)
@@ -514,13 +556,15 @@ def show_materials_for_cart(vk, user_id, cat, th=None, page=1):
     per_page = 6
     with db() as con:
         if th is None:
-            total = con.execute("SELECT COUNT(*) c FROM materials WHERE category=?",
-                                (cat,)).fetchone()["c"]
+            total = con.execute("SELECT COUNT(*) c FROM materials WHERE category=? "
+                                "AND COALESCE(hidden,0)=0", (cat,)).fetchone()["c"]
         elif th == "__none__":
             total = con.execute("SELECT COUNT(*) c FROM materials WHERE category=? "
+                                "AND COALESCE(hidden,0)=0 "
                                 "AND COALESCE(thickness,'')=''", (cat,)).fetchone()["c"]
         else:
             total = con.execute("SELECT COUNT(*) c FROM materials WHERE category=? "
+                                "AND COALESCE(hidden,0)=0 "
                                 "AND COALESCE(thickness,'')=?", (cat, th)).fetchone()["c"]
     if total == 0:
         send(vk, user_id, "Нет материалов.", main_menu(user_id)); return
@@ -531,15 +575,18 @@ def show_materials_for_cart(vk, user_id, cat, th=None, page=1):
     with db() as con:
         if th is None:
             rows = con.execute("SELECT * FROM materials WHERE category=? "
+                               "AND COALESCE(hidden,0)=0 "
                                "ORDER BY decor, name LIMIT ? OFFSET ?",
                                (cat, per_page, offset)).fetchall()
         elif th == "__none__":
             rows = con.execute("SELECT * FROM materials WHERE category=? "
+                               "AND COALESCE(hidden,0)=0 "
                                "AND COALESCE(thickness,'')='' "
                                "ORDER BY decor, name LIMIT ? OFFSET ?",
                                (cat, per_page, offset)).fetchall()
         else:
             rows = con.execute("SELECT * FROM materials WHERE category=? "
+                               "AND COALESCE(hidden,0)=0 "
                                "AND COALESCE(thickness,'')=? "
                                "ORDER BY decor, name LIMIT ? OFFSET ?",
                                (cat, th, per_page, offset)).fetchall()
@@ -614,10 +661,14 @@ def show_cart(vk, user_id):
     for i, it in enumerate(cart, 1):
         m = get_material(it["material_id"])
         qty = it["qty"]
-        qty_str = f"{qty:g}" if qty is not None else "?"
         plan = it.get("plan") or "—"
         label = full_label(m) if m else "?"
-        lines.append(f"{i}. {label} — {qty_str} (план {plan})")
+        is_hidden_edge = m and m["hidden"] and (m["category"] or "") == "edge"
+        if is_hidden_edge:
+            lines.append(f"{i}. {label} (план {plan})")
+        else:
+            qty_str = f"{qty:g}" if qty is not None else "?"
+            lines.append(f"{i}. {label} — {qty_str} (план {plan})")
     kb = VkKeyboard(one_time=False)
     kb.add_callback_button("➕ Добавить", color=VkKeyboardColor.PRIMARY,
                            payload={"command": "cart_more"})
@@ -726,9 +777,12 @@ def submit_cart(vk, user_id):
         send(vk, user_id, "Корзина пуста.", main_menu(user_id)); return
     default_plan = st["data"].get("default_plan", "")
     for it in cart:
-        if it["qty"] is None or it["qty"] <= 0:
-            send(vk, user_id, "❗ У некоторых позиций не указано количество."); return
-        if not it.get("plan") and default_plan:
+        m = get_material(it["material_id"])
+        is_hidden_edge = m and m["hidden"] and (m["category"] or "") == "edge"
+        if not is_hidden_edge:
+            if it["qty"] is None or it["qty"] <= 0:
+                send(vk, user_id, "❗ У некоторых позиций не указано количество."); return
+        if not it.get("plan") and default_plan and not is_hidden_edge:
             it["plan"] = default_plan
 
     auto_issue = _all_board(cart)
@@ -741,13 +795,13 @@ def submit_cart(vk, user_id):
             "INSERT INTO requests (user_id,material_id,qty,plan,comment,"
             "status,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)",
             (user_id, cart[0]["material_id"],
-             sum(i["qty"] for i in cart), plan_str, "", init_status,
+             sum(i["qty"] or 0 for i in cart), plan_str, "", init_status,
              now_str(), now_str()))
         rid = cur.lastrowid
         for it in cart:
             con.execute("INSERT INTO request_items (request_id,material_id,qty,plan,status) "
                         "VALUES (?,?,?,?,?)",
-                        (rid, it["material_id"], it["qty"], it.get("plan") or "",
+                        (rid, it["material_id"], it["qty"] or 0, it.get("plan") or "",
                          init_status))
         minus_lines = []
         if auto_issue:
@@ -793,20 +847,69 @@ def submit_cart(vk, user_id):
             notif.append(f"{i}. {full_label(m)} — {it['qty']:g} {m['unit']}")
         notify_board_and_warehouse(vk, "\n".join(notif))
     else:
-        lines = [f"✅ Заявка №{rid} отправлена на выдачу", ""]
-        for i, it in enumerate(cart, 1):
+        # Проверяем — только ли кромка в заявке
+        edge_only = True
+        plan_card = ""
+        glue_needed_card = False
+        glue_qty_card = 0.0
+        for it in cart:
             m = get_material(it["material_id"])
-            plan = it.get("plan") or "—"
-            lines.append(f"{i}. {full_label(m)} — {it['qty']:g} {m['unit']} (план {plan})")
-        lines += ["", "Кладовщик подтвердит выдачу."]
-        send(vk, user_id, "\n".join(lines), main_menu(user_id))
-        notif = [f"🔔 Новая заявка №{rid} (кромка/плёнка)", ""]
-        for i, it in enumerate(cart, 1):
-            m = get_material(it["material_id"])
-            plan = it.get("plan") or "—"
-            notif.append(f"{i}. {full_label(m)} — {it['qty']:g} {m['unit']} (план {plan})")
-        notif += ["", f"От: {author}"]
-        notify_warehouse(vk, "\n".join(notif))
+            if not m or not m["hidden"] or (m["category"] or "") != "edge":
+                edge_only = False
+                break
+            name = (m["name"] or "").lower()
+            if "клей" in name:
+                glue_needed_card = True
+                glue_qty_card = float(it["qty"] or 0)
+            else:
+                plan_card = it.get("plan") or ""
+
+        if edge_only:
+            # Карточка-уведомление для кладовщика
+            lines_n = [
+                f"📏 НОВАЯ ЗАЯВКА НА КРОМКУ №{rid}",
+                "",
+                f"👤 От: {author}",
+                f"📋 План: {plan_card or '—'}",
+                "",
+            ]
+            if glue_needed_card and glue_qty_card > 0:
+                lines_n.append(f"🧴 Клей кромочный: НУЖЕН, {glue_qty_card:g} кг")
+            else:
+                lines_n.append("🧴 Клей кромочный: НЕ НУЖЕН")
+            lines_n += ["", "Откройте 📥 Заявки для подтверждения."]
+            notify_warehouse(vk, "\n".join(lines_n))
+
+            # Автору — подтверждение
+            lines = [f"✅ Заявка на кромку №{rid} отправлена", ""]
+            lines.append(f"📋 План: {plan_card or '—'}")
+            if glue_needed_card and glue_qty_card > 0:
+                lines.append(f"🧴 Клей кромочный: {glue_qty_card:g} кг")
+            else:
+                lines.append("🧴 Без клея")
+            lines += ["", "Кладовщик подтвердит выдачу."]
+            send(vk, user_id, "\n".join(lines), main_menu(user_id))
+        else:
+            lines = [f"✅ Заявка №{rid} отправлена на выдачу", ""]
+            for i, it in enumerate(cart, 1):
+                m = get_material(it["material_id"])
+                plan = it.get("plan") or "—"
+                if m and m["hidden"] and (m["category"] or "") == "edge":
+                    lines.append(f"{i}. {full_label(m)} (план {plan})")
+                else:
+                    lines.append(f"{i}. {full_label(m)} — {it['qty']:g} {m['unit']} (план {plan})")
+            lines += ["", "Кладовщик подтвердит выдачу."]
+            send(vk, user_id, "\n".join(lines), main_menu(user_id))
+            notif = [f"🔔 Новая заявка №{rid} (кромка/плёнка)", ""]
+            for i, it in enumerate(cart, 1):
+                m = get_material(it["material_id"])
+                plan = it.get("plan") or "—"
+                if m and m["hidden"] and (m["category"] or "") == "edge":
+                    notif.append(f"{i}. {full_label(m)} (план {plan})")
+                else:
+                    notif.append(f"{i}. {full_label(m)} — {it['qty']:g} {m['unit']} (план {plan})")
+            notif += ["", f"От: {author}"]
+            notify_warehouse(vk, "\n".join(notif))
 
 
 def show_my_requests(vk, user_id):
@@ -879,6 +982,38 @@ def show_active_requests(vk, user_id, page=1):
          kb.get_keyboard())
 
 
+def _render_edge_card(vk, user_id, r, items):
+    plan, glue_needed, glue_qty = _edge_request_data(items)
+    author = r["author_name"] or r["user_id"]
+    lines = [
+        "📏 ЗАЯВКА НА КРОМКУ",
+        f"№{r['id']}",
+        "",
+        f"👤 От: {author}",
+        f"🕒 {r['created_at'][:16]}",
+        f"📋 План: {plan or '—'}",
+        "",
+        "Требуется выдать кромку.",
+        "",
+    ]
+    if glue_needed and glue_qty > 0:
+        lines.append(f"🧴 Клей кромочный: НУЖЕН, {glue_qty:g} кг")
+    else:
+        lines.append("🧴 Клей кромочный: НЕ НУЖЕН")
+    lines += ["", f"Статус: {STATUS.get(r['status'], r['status'])}"]
+
+    kb = VkKeyboard(one_time=False)
+    if is_warehouse_strict(user_id) and r["status"] in ("new", "approved"):
+        kb.add_callback_button("✅ Выдал", color=VkKeyboardColor.POSITIVE,
+                               payload={"command": f"wh_issue:{r['id']}"})
+        kb.add_callback_button("❌ Не выдал", color=VkKeyboardColor.NEGATIVE,
+                               payload={"command": f"wh_reject:{r['id']}"})
+        kb.add_line()
+    kb.add_callback_button("⬅️ К списку", color=VkKeyboardColor.SECONDARY,
+                           payload={"command": "wh_requests"})
+    send(vk, user_id, "\n".join(lines), kb.get_keyboard())
+
+
 def show_request_details(vk, user_id, rid):
     with db() as con:
         r = con.execute(
@@ -895,19 +1030,33 @@ def show_request_details(vk, user_id, rid):
                LEFT JOIN materials m ON m.id=ri.material_id
                WHERE ri.request_id=?""", (rid,)).fetchall()
 
+    if _is_edge_only_request(items):
+        _render_edge_card(vk, user_id, r, items)
+        return
+
     cats_line = _cats_words_for_items(items)
     lines = [f"📋 Заявка №{r['id']} · {cats_line}", ""]
     if items:
         for i, it in enumerate(items, 1):
             stock = it["stock"] if it["stock"] is not None else 0
-            warn = " ⚠️" if stock < it["qty"] else ""
             plan = it["plan"] if it["plan"] else "—"
             name = it["m_name"] or "?"
             th = it["m_th"] or ""
             dec = it["m_decor"] or ""
             label = " ".join(p for p in [th, dec] if p) or name
-            lines.append(f"{i}. [{cat_word(it['m_cat'])}] {label} — "
-                         f"{it['qty']:g} {it['m_unit'] or ''} (план {plan}){warn}")
+            cat = it["m_cat"] or ""
+            is_hidden_edge = (cat == "edge"
+                              and (it["qty"] or 0) == 0
+                              and (name or "").lower().startswith("кромка")
+                              and not dec)
+            if is_hidden_edge:
+                lines.append(f"{i}. [{cat_word(cat)}] {label} (план {plan})")
+            else:
+                warn = ""
+                if cat and cat != "edge" and stock < it["qty"]:
+                    warn = " ⚠️"
+                lines.append(f"{i}. [{cat_word(cat)}] {label} — "
+                             f"{it['qty']:g} {it['m_unit'] or ''} (план {plan}){warn}")
     else:
         m = get_material(r["material_id"])
         lines.append(f"• {full_label(m) if m else '?'} — {r['qty']:g}")
@@ -945,6 +1094,9 @@ def issue_request(vk, user_id, rid):
                                 (it["material_id"],)).fetchone()
                 if not m:
                     summary.append(f"ID {it['material_id']} — удалён"); continue
+                if m["hidden"]:
+                    summary.append(f"{full_label(m)}")
+                    continue
                 new_qty = m["qty"] - it["qty"]
                 con.execute("UPDATE materials SET qty=?, updated_at=? WHERE id=?",
                             (new_qty, now_str(), m["id"]))
@@ -954,7 +1106,7 @@ def issue_request(vk, user_id, rid):
         else:
             m = con.execute("SELECT * FROM materials WHERE id=?",
                             (r["material_id"],)).fetchone()
-            if m:
+            if m and not m["hidden"]:
                 new_qty = m["qty"] - r["qty"]
                 con.execute("UPDATE materials SET qty=?, updated_at=? WHERE id=?",
                             (new_qty, now_str(), m["id"]))
@@ -1013,8 +1165,8 @@ def show_inc_list(vk, user_id, mass=False):
 def show_inc_list_in_cat(vk, user_id, cat, mass=False, page=1):
     per_page = 6
     with db() as con:
-        total = con.execute("SELECT COUNT(*) c FROM materials WHERE category=?",
-                            (cat,)).fetchone()["c"]
+        total = con.execute("SELECT COUNT(*) c FROM materials WHERE category=? "
+                            "AND COALESCE(hidden,0)=0", (cat,)).fetchone()["c"]
     if total == 0:
         send(vk, user_id, "В этой категории нет материалов.", back_kb()); return
     pages = (total + per_page - 1) // per_page
@@ -1023,6 +1175,7 @@ def show_inc_list_in_cat(vk, user_id, cat, mass=False, page=1):
     offset = (page - 1) * per_page
     with db() as con:
         rows = con.execute("SELECT * FROM materials WHERE category=? "
+                           "AND COALESCE(hidden,0)=0 "
                            "ORDER BY thickness, decor, name LIMIT ? OFFSET ?",
                            (cat, per_page, offset)).fetchall()
     prefix = "minc" if mass else "inc"
@@ -1119,8 +1272,8 @@ def show_edit_list(vk, user_id):
 def show_edit_list_in_cat(vk, user_id, cat, page=1):
     per_page = 6
     with db() as con:
-        total = con.execute("SELECT COUNT(*) c FROM materials WHERE category=?",
-                            (cat,)).fetchone()["c"]
+        total = con.execute("SELECT COUNT(*) c FROM materials WHERE category=? "
+                            "AND COALESCE(hidden,0)=0", (cat,)).fetchone()["c"]
     if total == 0:
         send(vk, user_id, "В этой категории нет материалов.", back_kb()); return
     pages = (total + per_page - 1) // per_page
@@ -1129,6 +1282,7 @@ def show_edit_list_in_cat(vk, user_id, cat, page=1):
     offset = (page - 1) * per_page
     with db() as con:
         rows = con.execute("SELECT * FROM materials WHERE category=? "
+                           "AND COALESCE(hidden,0)=0 "
                            "ORDER BY thickness, decor, name LIMIT ? OFFSET ?",
                            (cat, per_page, offset)).fetchall()
     kb = VkKeyboard(one_time=False)
@@ -1213,8 +1367,8 @@ def show_delete_list(vk, user_id):
 def show_delete_list_in_cat(vk, user_id, cat, page=1):
     per_page = 6
     with db() as con:
-        total = con.execute("SELECT COUNT(*) c FROM materials WHERE category=?",
-                            (cat,)).fetchone()["c"]
+        total = con.execute("SELECT COUNT(*) c FROM materials WHERE category=? "
+                            "AND COALESCE(hidden,0)=0", (cat,)).fetchone()["c"]
     if total == 0:
         send(vk, user_id, "В этой категории нет материалов.", back_kb()); return
     pages = (total + per_page - 1) // per_page
@@ -1223,6 +1377,7 @@ def show_delete_list_in_cat(vk, user_id, cat, page=1):
     offset = (page - 1) * per_page
     with db() as con:
         rows = con.execute("SELECT * FROM materials WHERE category=? "
+                           "AND COALESCE(hidden,0)=0 "
                            "ORDER BY thickness, decor, name LIMIT ? OFFSET ?",
                            (cat, per_page, offset)).fetchall()
     kb = VkKeyboard(one_time=False)
@@ -1287,7 +1442,8 @@ def show_clear_stock_confirm(vk, user_id):
 
 def clear_stock(vk, user_id):
     with db() as con:
-        con.execute("UPDATE materials SET qty=0, updated_at=?", (now_str(),))
+        con.execute("UPDATE materials SET qty=0, updated_at=? WHERE COALESCE(hidden,0)=0",
+                    (now_str(),))
         con.commit()
     log_action(user_id, "Очищены все остатки")
     send(vk, user_id, "🧹 Все остатки обнулены.", main_menu(user_id))
@@ -1295,14 +1451,16 @@ def clear_stock(vk, user_id):
 
 def show_stats(vk, user_id):
     with db() as con:
-        tm = con.execute("SELECT COUNT(*) c FROM materials").fetchone()["c"]
-        tq = con.execute("SELECT COALESCE(SUM(qty),0) s FROM materials").fetchone()["s"]
+        tm = con.execute("SELECT COUNT(*) c FROM materials WHERE COALESCE(hidden,0)=0").fetchone()["c"]
+        tq = con.execute("SELECT COALESCE(SUM(qty),0) s FROM materials "
+                         "WHERE COALESCE(hidden,0)=0").fetchone()["s"]
         ac = con.execute("SELECT COUNT(*) c FROM requests WHERE status IN ('new','approved')").fetchone()["c"]
         isd = con.execute("SELECT COUNT(*) c FROM requests WHERE status='issued'").fetchone()["c"]
         rj = con.execute("SELECT COUNT(*) c FROM requests WHERE status='rejected'").fetchone()["c"]
         us = con.execute("SELECT role, COUNT(*) c FROM users WHERE blocked=0 GROUP BY role").fetchall()
         by_cat = con.execute("SELECT category, COUNT(*) c, COALESCE(SUM(qty),0) s "
-                             "FROM materials GROUP BY category").fetchall()
+                             "FROM materials WHERE COALESCE(hidden,0)=0 "
+                             "GROUP BY category").fetchall()
     lines = ["📊 СВОДКА СКЛАДА", "", f"📦 Позиций: {tm}",
              f"📊 Общий остаток: {tq:g}", "", "По категориям:"]
     for r in by_cat:
@@ -1454,9 +1612,11 @@ def inventory_begin(vk, user_id, cat):
     with db() as con:
         if cat == "all":
             rows = con.execute("SELECT id FROM materials "
+                               "WHERE COALESCE(hidden,0)=0 "
                                "ORDER BY category, thickness, decor, name").fetchall()
         else:
             rows = con.execute("SELECT id FROM materials WHERE category=? "
+                               "AND COALESCE(hidden,0)=0 "
                                "ORDER BY thickness, decor, name", (cat,)).fetchall()
     if not rows:
         send(vk, user_id, "Нет материалов.", main_menu(user_id)); return
@@ -2057,7 +2217,7 @@ def handle_message(vk, user_id, text):
         unit = "шт" if text.strip() == "-" else text.strip()
         with db() as con:
             con.execute("INSERT INTO materials (category,name,unit,qty,thickness,decor,"
-                        "updated_at) VALUES (?,?,?,?,?,?,?)",
+                        "hidden,updated_at) VALUES (?,?,?,?,?,?,0,?)",
                         (data["category"], data["name"], unit, data["qty"],
                          data.get("thickness", ""), data.get("decor", ""), now_str()))
             con.commit()
