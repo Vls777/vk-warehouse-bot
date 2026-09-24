@@ -346,18 +346,20 @@ def _is_edge_only_request(items):
 
 
 def _edge_request_data(items):
-    plan = ""
-    glue_needed = False
-    glue_qty = 0.0
+    """Возвращает (plans_list, glue_pairs), где glue_pairs — [(plan, qty), ...]."""
+    plans = []
+    glue_pairs = []
     for it in items:
         name = (it["m_name"] or "").lower()
+        plan = it["plan"] or ""
         if "клей" in name:
-            glue_needed = True
-            glue_qty = float(it["qty"] or 0)
+            q = float(it["qty"] or 0)
+            if q > 0:
+                glue_pairs.append((plan, q))
         else:
-            if it["plan"]:
-                plan = it["plan"]
-    return plan, glue_needed, glue_qty
+            if plan and plan not in plans:
+                plans.append(plan)
+    return plans, glue_pairs
 
 
 def register_plan(n):
@@ -902,40 +904,56 @@ def submit_cart(vk, user_id):
         notify_board_and_warehouse(vk, "\n".join(notif))
     else:
         edge_only = True
-        plan_card = ""
-        glue_needed_card = False
-        glue_qty_card = 0.0
         for it in cart:
             m = get_material(it["material_id"])
             if not m or not m["hidden"] or (m["category"] or "") != "edge":
                 edge_only = False
                 break
-            name = (m["name"] or "").lower()
-            if "клей" in name:
-                glue_needed_card = True
-                glue_qty_card = float(it["qty"] or 0)
-            else:
-                plan_card = it.get("plan") or ""
 
         if edge_only:
+            plans_list_e = []
+            glue_pairs_e = []
+            for it in cart:
+                m = get_material(it["material_id"])
+                if not m: continue
+                nm = (m["name"] or "").lower()
+                plan_it = it.get("plan") or ""
+                if "клей" in nm:
+                    q = float(it["qty"] or 0)
+                    if q > 0:
+                        glue_pairs_e.append((plan_it, q))
+                else:
+                    if plan_it and plan_it not in plans_list_e:
+                        plans_list_e.append(plan_it)
+            plan_str_e = ", ".join(plans_list_e) if plans_list_e else "—"
+
             lines_n = [
                 f"📏 НОВАЯ ЗАЯВКА НА КРОМКУ №{rid}",
                 "",
                 f"👤 От: {author}",
-                f"📋 План: {plan_card or '—'}",
+                f"📋 План(ы): {plan_str_e}",
                 "",
             ]
-            if glue_needed_card and glue_qty_card > 0:
-                lines_n.append(f"🧴 Клей кромочный: НУЖЕН, {glue_qty_card:g} канистр")
+            if glue_pairs_e:
+                lines_n.append("🧴 Клей кромочный: НУЖЕН")
+                for plan_g, qty_g in glue_pairs_e:
+                    if plan_g:
+                        lines_n.append(f"   • план {plan_g}: {qty_g:g} канистр")
+                    else:
+                        lines_n.append(f"   • {qty_g:g} канистр")
             else:
                 lines_n.append("🧴 Клей кромочный: НЕ НУЖЕН")
             lines_n += ["", "Откройте 📥 Заявки для подтверждения."]
             notify_warehouse(vk, "\n".join(lines_n))
 
             lines = [f"✅ Заявка на кромку №{rid} отправлена", ""]
-            lines.append(f"📋 План: {plan_card or '—'}")
-            if glue_needed_card and glue_qty_card > 0:
-                lines.append(f"🧴 Клей кромочный: {glue_qty_card:g} канистр")
+            lines.append(f"📋 План(ы): {plan_str_e}")
+            if glue_pairs_e:
+                for plan_g, qty_g in glue_pairs_e:
+                    if plan_g:
+                        lines.append(f"🧴 Клей кромочный (план {plan_g}): {qty_g:g} канистр")
+                    else:
+                        lines.append(f"🧴 Клей кромочный: {qty_g:g} канистр")
             else:
                 lines.append("🧴 Без клея")
             lines += ["", "Кладовщик подтвердит выдачу."]
@@ -1040,21 +1058,27 @@ def show_active_requests(vk, user_id, page=1):
 
 
 def _render_edge_card(vk, user_id, r, items):
-    plan, glue_needed, glue_qty = _edge_request_data(items)
+    plans, glue_pairs = _edge_request_data(items)
     author = r["author_name"] or r["user_id"]
+    plan_str = ", ".join(plans) if plans else "—"
     lines = [
         "📏 ЗАЯВКА НА КРОМКУ",
         f"№{r['id']}",
         "",
         f"👤 От: {author}",
         f"🕒 {r['created_at'][:16]}",
-        f"📋 План: {plan or '—'}",
+        f"📋 План(ы): {plan_str}",
         "",
         "Требуется выдать кромку.",
         "",
     ]
-    if glue_needed and glue_qty > 0:
-        lines.append(f"🧴 Клей кромочный: НУЖЕН, {glue_qty:g} канистр")
+    if glue_pairs:
+        lines.append("🧴 Клей кромочный: НУЖЕН")
+        for plan_g, qty_g in glue_pairs:
+            if plan_g:
+                lines.append(f"   • план {plan_g}: {qty_g:g} канистр")
+            else:
+                lines.append(f"   • {qty_g:g} канистр")
     else:
         lines.append("🧴 Клей кромочный: НЕ НУЖЕН")
     lines += ["", f"Статус: {STATUS.get(r['status'], r['status'])}"]
