@@ -722,7 +722,7 @@ def show_my_requests(vk, user_id):
 
 
 def show_active_requests(vk, user_id, page=1):
-    per_page = 8
+    per_page = 7
     with db() as con:
         total = con.execute("SELECT COUNT(*) c FROM requests "
                             "WHERE status IN ('new','approved')").fetchone()["c"]
@@ -899,7 +899,7 @@ def show_inc_list(vk, user_id, mass=False):
 
 
 def show_inc_list_in_cat(vk, user_id, cat, mass=False, page=1):
-    per_page = 8
+    per_page = 6
     with db() as con:
         total = con.execute("SELECT COUNT(*) c FROM materials WHERE category=?",
                             (cat,)).fetchone()["c"]
@@ -1005,7 +1005,7 @@ def show_edit_list(vk, user_id):
 
 
 def show_edit_list_in_cat(vk, user_id, cat, page=1):
-    per_page = 8
+    per_page = 6
     with db() as con:
         total = con.execute("SELECT COUNT(*) c FROM materials WHERE category=?",
                             (cat,)).fetchone()["c"]
@@ -1099,7 +1099,7 @@ def show_delete_list(vk, user_id):
 
 
 def show_delete_list_in_cat(vk, user_id, cat, page=1):
-    per_page = 8
+    per_page = 6
     with db() as con:
         total = con.execute("SELECT COUNT(*) c FROM materials WHERE category=?",
                             (cat,)).fetchone()["c"]
@@ -1427,7 +1427,6 @@ def handle_callback(vk, user_id, command):
     if command == "noop":
         return
 
-    # --- инвентаризация ---
     if command.startswith("inv_cat:"):
         if not is_warehouse(user_id):
             send(vk, user_id, "Нет доступа."); return
@@ -1457,7 +1456,6 @@ def handle_callback(vk, user_id, command):
             send(vk, user_id, "Нет доступа."); return
         finish_inventory(vk, user_id); return
 
-    # --- новая номенклатура: навигация ---
     if command == "newnav:back":
         if not is_warehouse(user_id):
             send(vk, user_id, "Нет доступа."); return
@@ -1476,7 +1474,6 @@ def handle_callback(vk, user_id, command):
         _new_step_send(vk, user_id, 2)
         return
 
-    # --- корзина ---
     if command.startswith("cart_cat:"):
         cat = command.split(":", 1)[1]
         st = get_state(user_id)
@@ -1528,7 +1525,6 @@ def handle_callback(vk, user_id, command):
                   default_plan=st["data"].get("default_plan", ""))
         show_categories_for_cart(vk, user_id); return
 
-    # --- план ---
     if command.startswith("plan_page:"):
         page = safe_int(command.split(":", 1)[1]) or 1
         st = get_state(user_id)
@@ -1567,7 +1563,6 @@ def handle_callback(vk, user_id, command):
                   editing_index=st["data"].get("editing_index", -1))
         send(vk, user_id, "🔢 Введите номер плана (1–2000):"); return
 
-    # --- заявки ---
     if command == "wh_requests":
         if not is_driver(user_id):
             send(vk, user_id, "Нет доступа."); return
@@ -1598,9 +1593,13 @@ def handle_callback(vk, user_id, command):
         reject_request(vk, user_id, rid)
         show_request_details(vk, user_id, rid); return
 
-    # --- приходы ---
     if not is_driver(user_id):
         send(vk, user_id, "Нет доступа."); return
+    if command == "inc_list":
+        show_inc_list(vk, user_id, mass=False); return
+    if command == "minc_start":
+        set_state(user_id, "minc_choose", mass_cart=[])
+        show_inc_list(vk, user_id, mass=True); return
     if command.startswith("inc_cat:"):
         cat = command.split(":", 1)[1]
         show_inc_list_in_cat(vk, user_id, cat, mass=False, page=1); return
@@ -1651,7 +1650,6 @@ def handle_callback(vk, user_id, command):
     if command == "minc_done":
         finish_mass_inc(vk, user_id); return
 
-    # --- номенклатура ---
     if not is_warehouse(user_id):
         send(vk, user_id, "Нет доступа."); return
     if command == "edit_list":
