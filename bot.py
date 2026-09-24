@@ -92,7 +92,6 @@ def init_db():
         if "hidden" not in cols("materials"):
             con.execute("ALTER TABLE materials ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0")
 
-        # Служебные позиции edge: убрать дубли, поставить правильные единицы
         now2 = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         hidden_edges = con.execute("SELECT * FROM materials WHERE category='edge' "
                                    "AND hidden=1 ORDER BY id").fetchall()
@@ -135,11 +134,11 @@ def init_db():
                 ("board", "Доска 22мм Венге", "шт",  50, "22мм", "Венге"),
                 ("board", "Доска 22мм Клён",  "шт",  40, "22мм", "Клён"),
                 ("board", "ЛДСП 22мм Тефия",  "лист", 30, "22мм", "Тефия"),
-                ("film",  "Плёнка Красный",   "м",  300, "",     "Красный"),
-                ("film",  "Плёнка Белый",     "м",  250, "",     "Белый"),
-                ("film",  "Плёнка Венге",     "м",  180, "",     "Венге"),
-                ("film",  "Плёнка Серый",     "м",  150, "",     "Серый"),
-                ("film",  "Клей для МДФ Kleiberit 431", "кг", 15, "", "Kleiberit 431"),
+                ("film",  "Плёнка Красный",   "рулон",  300, "",     "Красный"),
+                ("film",  "Плёнка Белый",     "рулон",  250, "",     "Белый"),
+                ("film",  "Плёнка Венге",     "рулон",  180, "",     "Венге"),
+                ("film",  "Плёнка Серый",     "рулон",  150, "",     "Серый"),
+                ("film",  "Клей для МДФ Kleiberit 431", "канистра", 15, "", "Kleiberit 431"),
             ]
             con.executemany(
                 "INSERT INTO materials (category,name,unit,qty,thickness,decor,updated_at) "
@@ -294,6 +293,41 @@ def _find_edge_glue():
                            "AND name='Клей кромочный' LIMIT 1").fetchone()
 
 
+def _is_film_material(m):
+    if not m: return False
+    return (m["category"] or "") == "film" and "клей" not in (m["name"] or "").lower()
+
+
+def _is_film_glue_material(m):
+    if not m: return False
+    return (m["category"] or "") == "film" and "клей" in (m["name"] or "").lower()
+
+
+def _find_film_glue():
+    with db() as con:
+        rows = con.execute("SELECT * FROM materials WHERE category='film' "
+                           "AND COALESCE(hidden,0)=0").fetchall()
+    for r in rows:
+        if "клей" in (r["name"] or "").lower():
+            return r
+    return None
+
+
+def _qty_kb(prefix):
+    """Клавиатура выбора количества 1-9 + ручной ввод."""
+    kb = VkKeyboard(one_time=False)
+    for row_start in (1, 4, 7):
+        for i in range(row_start, row_start + 3):
+            kb.add_callback_button(str(i), color=VkKeyboardColor.PRIMARY,
+                                   payload={"command": f"{prefix}:{i}"})
+        kb.add_line()
+    kb.add_callback_button("🔢 Вручную", color=VkKeyboardColor.SECONDARY,
+                           payload={"command": f"{prefix}:manual"})
+    kb.add_line()
+    kb.add_button("⬅️ В меню", color=VkKeyboardColor.SECONDARY)
+    return kb.get_keyboard()
+
+
 def _add_edge_to_cart(cart, plan, glue_qty=None):
     edge = _find_edge_main()
     glue = _find_edge_glue()
@@ -346,7 +380,6 @@ def _is_edge_only_request(items):
 
 
 def _edge_request_data(items):
-    """Возвращает (plans_list, glue_pairs), где glue_pairs — [(plan, qty), ...]."""
     plans = []
     glue_pairs = []
     for it in items:
@@ -503,7 +536,6 @@ def notify_board_and_warehouse(vk, text):
 
 
 def notify_drivers_only(vk, text):
-    """Только водителям — для уведомления «собрано, можно везти в цех»."""
     with db() as con:
         rows = con.execute("SELECT user_id FROM users "
                            "WHERE role='driver' AND blocked=0").fetchall()
@@ -689,6 +721,17 @@ def add_to_cart(vk, user_id, mid):
     default_plan = st["data"].get("default_plan", "")
     cart.append({"material_id": mid, "qty": None, "plan": None})
     idx = len(cart) - 1
+
+    is_film = (m["category"] or "") == "film"
+    if is_film:
+        set_state(user_id, "cart_qty_buttons", cart=cart, editing_index=idx,
+                  default_plan=default_plan)
+        send(vk, user_id,
+             f"🛒 Добавлено: {full_label(m)}\nОстаток: {m['qty']:g} {m['unit']}\n\n"
+             f"Выберите количество:",
+             _qty_kb("fq"))
+        return
+
     set_state(user_id, "cart_qty", cart=cart, editing_index=idx,
               default_plan=default_plan)
     kb = VkKeyboard(one_time=False)
@@ -714,11 +757,12 @@ def show_cart(vk, user_id):
         label = full_label(m) if m else "?"
         is_hidden = m and m["hidden"] and (m["category"] or "") == "edge"
         is_edge_main = is_hidden and "клей" not in (m["name"] or "").lower()
+        is_film_glue = m and (m["category"] or "") == "film" and "клей" in (m["name"] or "").lower()
         if is_edge_main:
             lines.append(f"{i}. {label} (план {plan})")
         else:
             qty_str = f"{qty:g}" if qty is not None else "?"
-            if is_hidden and "клей" in (m["name"] or "").lower():
+            if (is_hidden and "клей" in (m["name"] or "").lower()) or is_film_glue:
                 unit = "канистр"
             else:
                 unit = (m["unit"] if m else "") or ""
@@ -1129,13 +1173,14 @@ def show_request_details(vk, user_id, rid):
             is_hidden = (cat == "edge" and not th and not dec
                          and (name or "").strip() in ("Кромка", "Клей кромочный"))
             is_edge_main = is_hidden and "клей" not in (name or "").lower()
+            is_film_glue_it = (cat == "film" and "клей" in (name or "").lower())
             if is_edge_main:
                 lines.append(f"{i}. [{cat_word(cat)}] {label} (план {plan})")
             else:
                 warn = ""
                 if cat and cat != "edge" and stock < it["qty"]:
                     warn = " ⚠️"
-                if is_hidden and "клей" in (name or "").lower():
+                if (is_hidden and "клей" in (name or "").lower()) or is_film_glue_it:
                     unit_display = "канистр"
                 else:
                     unit_display = it["m_unit"] or ""
@@ -1186,6 +1231,16 @@ def issue_request(vk, user_id, rid):
                     else:
                         summary.append(f"{full_label(m)} (план {plan_it})")
                     continue
+                # Клей МДФ — тоже «канистр», не списываем как обычно
+                is_film_glue = (m["category"] or "") == "film" and "клей" in (m["name"] or "").lower()
+                if is_film_glue:
+                    new_qty = m["qty"] - it["qty"]
+                    con.execute("UPDATE materials SET qty=?, updated_at=? WHERE id=?",
+                                (new_qty, now_str(), m["id"]))
+                    summary.append(f"{full_label(m)} — {it['qty']:g} канистр (план {it['plan'] or '—'})")
+                    if new_qty < 0:
+                        minus_lines.append(f"{m['name']}: {new_qty:g} канистр")
+                    continue
                 new_qty = m["qty"] - it["qty"]
                 con.execute("UPDATE materials SET qty=?, updated_at=? WHERE id=?",
                             (new_qty, now_str(), m["id"]))
@@ -1221,7 +1276,7 @@ def issue_request(vk, user_id, rid):
              f"✅ Заявка №{rid} выполнена (план {plan_str}):\n" + "\n".join(summary))
     except Exception: pass
 
-    # Уведомление водителям: заказ собран, можно везти в цех
+    # Уведомление водителям
     lines_drv = [
         f"🚚 Заказ №{rid} собран, можно увозить в цех",
         "",
@@ -1654,7 +1709,7 @@ def _new_step_send(vk, uid, step):
     elif step == 4:
         send(vk, uid, "🔢 Шаг 4. Начальный остаток:", kb.get_keyboard())
     elif step == 5:
-        send(vk, uid, "📐 Шаг 5. Единица (шт, м, лист, кг, канистра). Или «-» для шт:",
+        send(vk, uid, "📐 Шаг 5. Единица (шт, м, лист, кг, канистра, рулон). Или «-» для шт:",
              kb.get_keyboard())
 
 
@@ -1920,6 +1975,87 @@ def handle_callback(vk, user_id, command):
                   default_plan=st["data"].get("default_plan", ""))
         show_categories_for_cart(vk, user_id); return
 
+    # --- Кнопки количества: плёнка ---
+    if command.startswith("fq:"):
+        val = command.split(":", 1)[1]
+        st = get_state(user_id)
+        cart = list(st["data"].get("cart", []))
+        idx = st["data"].get("editing_index", len(cart) - 1)
+        if val == "manual":
+            set_state(user_id, "cart_qty", cart=cart, editing_index=idx,
+                      default_plan=st["data"].get("default_plan", ""))
+            send(vk, user_id, "🔢 Введите количество числом:"); return
+        qty = safe_int(val)
+        if qty is None: return
+        if 0 <= idx < len(cart):
+            cart[idx]["qty"] = qty
+        m = get_material(cart[idx]["material_id"]) if 0 <= idx < len(cart) else None
+        if _is_film_glue_material(m):
+            cart[idx]["plan"] = ""
+            set_state(user_id, "cart", cart=cart,
+                      default_plan=st["data"].get("default_plan", ""))
+            send(vk, user_id, f"✅ {full_label(m)} — {qty:g} {m['unit']}")
+            show_cart(vk, user_id); return
+        if _is_film_material(m):
+            cart[idx]["plan"] = ""
+            has_glue = False
+            for it_c in cart:
+                if _is_film_glue_material(get_material(it_c["material_id"])):
+                    has_glue = True
+                    break
+            if has_glue:
+                set_state(user_id, "cart", cart=cart,
+                          default_plan=st["data"].get("default_plan", ""))
+                show_cart(vk, user_id); return
+            set_state(user_id, "film_glue_ask", cart=cart)
+            kb = VkKeyboard(one_time=False)
+            kb.add_callback_button("✅ Да, с клеем", color=VkKeyboardColor.POSITIVE,
+                                   payload={"command": "film_glue:yes"})
+            kb.add_callback_button("❌ Нет, без клея", color=VkKeyboardColor.SECONDARY,
+                                   payload={"command": "film_glue:no"})
+            kb.add_line()
+            kb.add_button("⬅️ В меню", color=VkKeyboardColor.SECONDARY)
+            send(vk, user_id,
+                 f"🎞 {full_label(m)}\n\n🧴 Клей для МДФ нужен?",
+                 kb.get_keyboard())
+            return
+        return
+
+    # --- Кнопки количества: клей МДФ ---
+    if command.startswith("fmg:"):
+        val = command.split(":", 1)[1]
+        st = get_state(user_id)
+        cart = list(st["data"].get("cart", []))
+        if val == "manual":
+            set_state(user_id, "film_glue_qty", cart=cart)
+            send(vk, user_id, "🔢 Введите количество канистр числом:"); return
+        qty = safe_int(val)
+        if qty is None: return
+        glue = _find_film_glue()
+        if glue:
+            cart.append({"material_id": glue["id"], "qty": qty, "plan": ""})
+        set_state(user_id, "cart", cart=cart,
+                  default_plan=st["data"].get("default_plan", ""))
+        send(vk, user_id, f"✅ Плёнка + клей МДФ {qty:g} канистр добавлены в корзину")
+        show_cart(vk, user_id); return
+
+    # --- Плёнка: вопрос про клей МДФ ---
+    if command == "film_glue:no":
+        st = get_state(user_id)
+        cart = list(st["data"].get("cart", []))
+        set_state(user_id, "cart", cart=cart,
+                  default_plan=st["data"].get("default_plan", ""))
+        send(vk, user_id, "✅ Плёнка добавлена в корзину (без клея)")
+        show_cart(vk, user_id); return
+    if command == "film_glue:yes":
+        st = get_state(user_id)
+        cart = list(st["data"].get("cart", []))
+        set_state(user_id, "film_glue_qty_buttons", cart=cart)
+        send(vk, user_id,
+             "🧴 Сколько КАНИСТР клея МДФ нужно?",
+             _qty_kb("fmg"))
+        return
+
     # --- Кромка ---
     if command.startswith("edge_plan_page:"):
         page = safe_int(command.split(":", 1)[1]) or 1
@@ -2182,6 +2318,10 @@ def handle_message(vk, user_id, text):
 
     st = get_state(user_id); state = st["state"]; data = st["data"]
 
+    if state == "cart_qty_buttons" or state == "film_glue_qty_buttons":
+        send(vk, user_id, "🔢 Нажмите кнопку с количеством или «🔢 Вручную».")
+        return
+
     if state == "inv_qty":
         data2 = dict(data)
         queue = data2.get("queue", [])
@@ -2200,6 +2340,21 @@ def handle_message(vk, user_id, text):
         data2["changes"] = changes
         set_state(user_id, "inv_qty", **data2)
         show_inventory_item(vk, user_id); return
+
+    if state == "film_glue_qty":
+        try:
+            qty = float(text.replace(",", "."))
+            if qty <= 0: raise ValueError
+        except ValueError:
+            send(vk, user_id, "❗ Введите положительное число."); return
+        cart = list(data.get("cart", []))
+        glue = _find_film_glue()
+        if glue:
+            cart.append({"material_id": glue["id"], "qty": qty, "plan": ""})
+        set_state(user_id, "cart", cart=cart,
+                  default_plan=data.get("default_plan", ""))
+        send(vk, user_id, f"✅ Плёнка + клей МДФ {qty:g} канистр добавлены в корзину")
+        show_cart(vk, user_id); return
 
     if state == "edge_glue_qty":
         try:
@@ -2237,11 +2392,34 @@ def handle_message(vk, user_id, text):
         idx = data.get("editing_index", len(cart) - 1)
         if 0 <= idx < len(cart): cart[idx]["qty"] = qty
         m = get_material(cart[idx]["material_id"]) if 0 <= idx < len(cart) else None
-        if m and (m["category"] or "board") == "film":
+        if m and _is_film_glue_material(m):
             cart[idx]["plan"] = ""
             set_state(user_id, "cart", cart=cart,
                       default_plan=data.get("default_plan", ""))
             show_cart(vk, user_id); return
+        if m and _is_film_material(m):
+            cart[idx]["plan"] = ""
+            has_glue = False
+            for it_c in cart:
+                if _is_film_glue_material(get_material(it_c["material_id"])):
+                    has_glue = True
+                    break
+            if has_glue:
+                set_state(user_id, "cart", cart=cart,
+                          default_plan=data.get("default_plan", ""))
+                show_cart(vk, user_id); return
+            set_state(user_id, "film_glue_ask", cart=cart)
+            kb = VkKeyboard(one_time=False)
+            kb.add_callback_button("✅ Да, с клеем", color=VkKeyboardColor.POSITIVE,
+                                   payload={"command": "film_glue:yes"})
+            kb.add_callback_button("❌ Нет, без клея", color=VkKeyboardColor.SECONDARY,
+                                   payload={"command": "film_glue:no"})
+            kb.add_line()
+            kb.add_button("⬅️ В меню", color=VkKeyboardColor.SECONDARY)
+            send(vk, user_id,
+                 f"🎞 {full_label(m)}\n\n🧴 Клей для МДФ нужен?",
+                 kb.get_keyboard())
+            return
         set_state(user_id, "cart_plan", cart=cart, editing_index=idx,
                   default_plan=data.get("default_plan", ""))
         show_plan_page(vk, user_id, 1); return
