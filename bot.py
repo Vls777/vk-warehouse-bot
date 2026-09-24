@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""VK-бот «Склад пиломатериалов, кромки и плёнки»."""
+"""VK-бот «Склад»."""
 
 import sqlite3
 import os
@@ -101,14 +101,17 @@ def init_db():
                 ("board", "Доска 22мм Дуб",   "шт",  90, "22мм", "Дуб"),
                 ("board", "Доска 22мм Венге", "шт",  50, "22мм", "Венге"),
                 ("board", "Доска 22мм Клён",  "шт",  40, "22мм", "Клён"),
+                ("board", "ЛДСП 22мм Тефия",  "лист", 30, "22мм", "Тефия"),
                 ("edge",  "Кромка Дуб",       "м",  200, "",     "Дуб"),
                 ("edge",  "Кромка Орех",      "м",  150, "",     "Орех"),
                 ("edge",  "Кромка Венге",     "м",  120, "",     "Венге"),
                 ("edge",  "Кромка Ясень",     "м",   80, "",     "Ясень"),
+                ("edge",  "Клей кромочный Клейберит 501", "кг", 20, "", "Клейберит 501"),
                 ("film",  "Плёнка Красный",   "м",  300, "",     "Красный"),
                 ("film",  "Плёнка Белый",     "м",  250, "",     "Белый"),
                 ("film",  "Плёнка Венге",     "м",  180, "",     "Венге"),
                 ("film",  "Плёнка Серый",     "м",  150, "",     "Серый"),
+                ("film",  "Клей для МДФ Kleiberit 431", "кг", 15, "", "Kleiberit 431"),
             ]
             con.executemany(
                 "INSERT INTO materials (category,name,unit,qty,thickness,decor,updated_at) "
@@ -161,7 +164,6 @@ def is_warehouse(user_id):
 
 
 def is_warehouse_strict(user_id):
-    """Только кладовщик — для подтверждения выдачи заявок."""
     return get_role(user_id) == "warehouse"
 
 
@@ -302,7 +304,7 @@ def render_stock():
                 out.append(f"▸ {th}")
             for r in groups[th]:
                 name = r["decor"] or r["name"]
-                out.append(f"   {name:<22} {r['qty']:>6g} {r['unit']}")
+                out.append(f"   {name:<24} {r['qty']:>6g} {r['unit']}")
         out.append("")
     return "\n".join(out)
 
@@ -595,7 +597,6 @@ def submit_cart(vk, user_id):
 
     auto_issue = _all_board(cart)
     init_status = "issued" if auto_issue else "new"
-
     plans = sorted({str(it.get("plan") or "") for it in cart if it.get("plan")})
     plan_str = ", ".join(plans) if plans else ""
 
@@ -1129,7 +1130,7 @@ def start_new_material(vk, user_id):
                                payload={"command": f"newcat:{c}"})
     kb.add_line()
     kb.add_button("⬅️ В меню", color=VkKeyboardColor.SECONDARY)
-    send(vk, user_id, "🆕 Шаг 1/6. Выберите категорию:", kb.get_keyboard())
+    send(vk, user_id, "🆕 Шаг 1/5. Выберите категорию:", kb.get_keyboard())
 
 
 # ======================= ИНВЕНТАРИЗАЦИЯ =======================
@@ -1258,9 +1259,9 @@ def handle_callback(vk, user_id, command):
             send(vk, user_id, "Неизвестная категория."); return
         set_state(user_id, "new_thickness", category=cat)
         if CATEGORIES[cat]["has_thickness"]:
-            send(vk, user_id, "🆕 Шаг 2/6. Введите толщину (10мм, 16мм). Или «-».")
+            send(vk, user_id, "🆕 Шаг 2/5. Введите толщину (10мм, 16мм). Или «-».")
         else:
-            send(vk, user_id, "🆕 Шаг 2/6. Введите декор/цвет (или «-»).")
+            send(vk, user_id, "🆕 Шаг 2/5. Введите декор/цвет (или «-»).")
         return
 
     if command.startswith("cart_cat:"):
@@ -1443,7 +1444,7 @@ def handle_message(vk, user_id, text):
         r = get_role(user_id)
         rr = {"operator": "станочник", "driver": "водитель погрузчика",
               "warehouse": "кладовщик", "admin": "администратор"}.get(r, r)
-        send(vk, user_id, f"👋 Складской бот «Пиломатериалы, кромка, плёнка»\n\n"
+        send(vk, user_id, f"👋 Складской бот\n\n"
                           f"Вы вошли как: {rr}\n\nВыберите действие:", main_menu(user_id))
         return
     if text == "/help":
@@ -1555,21 +1556,21 @@ def handle_message(vk, user_id, text):
         val = "" if text.strip() == "-" else text.strip()
         if CATEGORIES[cat]["has_thickness"]:
             set_state(user_id, "new_decor", category=cat, thickness=val)
-            send(vk, user_id, "🎨 Шаг 3/6. Декор (Дуб, Орех). Или «-»."); return
+            send(vk, user_id, "🎨 Шаг 3/5. Декор (Дуб, Орех). Или «-»."); return
         else:
             set_state(user_id, "new_name", category=cat, thickness="", decor=val)
             p = [x for x in (val,) if x]
             auto = ("Материал " + " ".join(p)).strip() if p else ""
-            send(vk, user_id, f"📝 Шаг 3/6. Авто-имя: «{auto}»\nВведите своё или «-»."
-                 if auto else "📝 Шаг 3/6. Название материала:"); return
+            send(vk, user_id, f"📝 Шаг 3/5. Авто-имя: «{auto}»\nВведите своё или «-»."
+                 if auto else "📝 Шаг 3/5. Название материала:"); return
     if state == "new_decor":
         decor = "" if text.strip() == "-" else text.strip()
         set_state(user_id, "new_name", category=data["category"],
                   thickness=data["thickness"], decor=decor)
         p = [x for x in (data["thickness"], decor) if x]
         auto = ("Материал " + " ".join(p)).strip() if p else ""
-        send(vk, user_id, f"📝 Шаг 3/6. Авто-имя: «{auto}»\nВведите своё или «-»."
-             if auto else "📝 Шаг 3/6. Название материала:"); return
+        send(vk, user_id, f"📝 Шаг 3/5. Авто-имя: «{auto}»\nВведите своё или «-»."
+             if auto else "📝 Шаг 3/5. Название материала:"); return
     if state == "new_name":
         raw = text.strip()
         if raw == "-":
@@ -1581,7 +1582,7 @@ def handle_message(vk, user_id, text):
         set_state(user_id, "new_qty", category=data["category"],
                   thickness=data.get("thickness", ""),
                   decor=data.get("decor", ""), name=name)
-        send(vk, user_id, "🔢 Шаг 4/6. Начальный остаток:"); return
+        send(vk, user_id, "🔢 Шаг 4/5. Начальный остаток:"); return
     if state == "new_qty":
         try: qty = float(text.replace(",", "."))
         except ValueError:
@@ -1589,20 +1590,13 @@ def handle_message(vk, user_id, text):
         set_state(user_id, "new_unit", category=data["category"],
                   thickness=data.get("thickness", ""),
                   decor=data.get("decor", ""), name=data["name"], qty=qty)
-        send(vk, user_id, "📐 Шаг 5/6. Единица (шт, м, лист). Или «-» для шт."); return
+        send(vk, user_id, "📐 Шаг 5/5. Единица (шт, м, лист, кг). Или «-» для шт."); return
     if state == "new_unit":
         unit = "шт" if text.strip() == "-" else text.strip()
-        set_state(user_id, "new_location", category=data["category"],
-                  thickness=data.get("thickness", ""),
-                  decor=data.get("decor", ""), name=data["name"],
-                  qty=data["qty"], unit=unit)
-        send(vk, user_id, "📍 Шаг 6/6. Место хранения. Или «-» чтобы пропустить."); return
-    if state == "new_location":
-        location = "" if text.strip() == "-" else text.strip()
         with db() as con:
             con.execute("INSERT INTO materials (category,name,unit,qty,thickness,decor,"
                         "updated_at) VALUES (?,?,?,?,?,?,?)",
-                        (data["category"], data["name"], data["unit"], data["qty"],
+                        (data["category"], data["name"], unit, data["qty"],
                          data.get("thickness", ""), data.get("decor", ""), now_str()))
             con.commit()
         log_action(user_id, f"Создан материал {data['name']}")
@@ -1612,8 +1606,7 @@ def handle_message(vk, user_id, text):
              f"📦 {data['name']}\n"
              f"Толщина: {data.get('thickness') or '—'}\n"
              f"Декор/цвет: {data.get('decor') or '—'}\n"
-             f"Остаток: {data['qty']:g} {data['unit']}\n"
-             f"Место: {location or '—'}",
+             f"Остаток: {data['qty']:g} {unit}",
              main_menu(user_id)); return
 
     if text == "📋 Остатки на складе":
