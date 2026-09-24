@@ -209,6 +209,10 @@ def materials_by_category(cat, th=None):
         if th is None:
             return con.execute("SELECT * FROM materials WHERE category=? "
                                "ORDER BY decor, name", (cat,)).fetchall()
+        if th == "__none__":
+            return con.execute("SELECT * FROM materials WHERE category=? "
+                               "AND COALESCE(thickness,'')='' "
+                               "ORDER BY decor, name", (cat,)).fetchall()
         return con.execute("SELECT * FROM materials WHERE category=? "
                            "AND COALESCE(thickness,'')=? ORDER BY decor, name",
                            (cat, th)).fetchall()
@@ -378,6 +382,15 @@ def send(vk, user_id, text, keyboard=None):
 def notify_warehouse(vk, text):
     with db() as con:
         rows = con.execute("SELECT user_id FROM users "
+                           "WHERE role IN ('warehouse','admin') AND blocked=0").fetchall()
+    for r in rows:
+        try: send(vk, r["user_id"], text)
+        except Exception: pass
+
+
+def notify_board_and_warehouse(vk, text):
+    with db() as con:
+        rows = con.execute("SELECT user_id FROM users "
                            "WHERE role IN ('driver','warehouse','admin') AND blocked=0").fetchall()
     for r in rows:
         try: send(vk, r["user_id"], text)
@@ -441,8 +454,12 @@ def show_categories_for_cart(vk, user_id):
 
 def show_thicknesses_for_cart(vk, user_id, cat):
     ths = thicknesses_by_category(cat)
-    if not ths:
-        show_materials_for_cart(vk, user_id, cat, None); return
+    with db() as con:
+        no_th = con.execute(
+            "SELECT COUNT(*) c FROM materials WHERE category=? "
+            "AND COALESCE(thickness,'')=''", (cat,)).fetchone()["c"]
+    if not ths and no_th == 0:
+        send(vk, user_id, "Нет материалов.", main_menu(user_id)); return
     st = get_state(user_id)
     cart = list(st["data"].get("cart", []))
     default_plan = st["data"].get("default_plan", "")
@@ -451,6 +468,10 @@ def show_thicknesses_for_cart(vk, user_id, cat):
         if i > 0: kb.add_line()
         kb.add_callback_button(th, color=VkKeyboardColor.PRIMARY,
                                payload={"command": f"cart_thick:{cat}:{th}"})
+    if no_th > 0:
+        if ths: kb.add_line()
+        kb.add_callback_button("📦 Без толщины", color=VkKeyboardColor.PRIMARY,
+                               payload={"command": f"cart_thick:{cat}:__none__"})
     kb.add_line()
     if cart:
         kb.add_callback_button("🛒 Корзина", color=VkKeyboardColor.POSITIVE,
@@ -493,7 +514,10 @@ def show_materials_for_cart(vk, user_id, cat, th=None):
     kb.add_button("⬅️ В меню", color=VkKeyboardColor.SECONDARY)
     set_state(user_id, "cart_choose", cart=cart, default_plan=default_plan,
               category=cat, thickness=th)
-    title = f"{cat_label(cat)}" + (f" {th}" if th else "")
+    if th == "__none__":
+        title = f"{cat_label(cat)} · без толщины"
+    else:
+        title = f"{cat_label(cat)}" + (f" {th}" if th else "")
     send(vk, user_id, f"{title}. Выберите:", kb.get_keyboard())
 
 
@@ -655,7 +679,7 @@ def submit_cart(vk, user_id):
         for i, it in enumerate(cart, 1):
             m = get_material(it["material_id"])
             notif.append(f"{i}. {full_label(m)} — {it['qty']:g} {m['unit']}")
-        notify_warehouse(vk, "\n".join(notif))
+        notify_board_and_warehouse(vk, "\n".join(notif))
     else:
         lines = [f"✅ Заявка №{rid} отправлена на выдачу", ""]
         for i, it in enumerate(cart, 1):
@@ -673,7 +697,6 @@ def submit_cart(vk, user_id):
         notify_warehouse(vk, "\n".join(notif))
 
 
-# ======================= МОИ ЗАЯВКИ =======================
 def show_my_requests(vk, user_id):
     with db() as con:
         rows = con.execute(
@@ -698,7 +721,6 @@ def show_my_requests(vk, user_id):
     send(vk, user_id, "\n".join(lines), back_kb())
 
 
-# ======================= СПИСОК АКТИВНЫХ ЗАЯВОК =======================
 def show_active_requests(vk, user_id, page=1):
     per_page = 8
     with db() as con:
@@ -745,7 +767,6 @@ def show_active_requests(vk, user_id, page=1):
          kb.get_keyboard())
 
 
-# ======================= КАРТОЧКА ЗАЯВКИ =======================
 def show_request_details(vk, user_id, rid):
     with db() as con:
         r = con.execute(
@@ -797,7 +818,7 @@ def show_request_details(vk, user_id, rid):
     send(vk, user_id, "\n".join(lines), kb.get_keyboard())
           
 
-# ======================= ВЫДАЧА / ОТКЛОНЕНИЕ (только кладовщик) =======================
+# ======================= ВЫДАЧА / ОТКЛОНЕНИЕ =======================
 def issue_request(vk, user_id, rid):
     with db() as con:
         r = con.execute("SELECT * FROM requests WHERE id=?", (rid,)).fetchone()
@@ -858,36 +879,70 @@ def reject_request(vk, user_id, rid):
 
 # ======================= ПРИХОД =======================
 def show_inc_list(vk, user_id, mass=False):
-    rows = all_materials()
-    if not rows:
+    cats = distinct_categories()
+    if not cats:
         send(vk, user_id, "Склад пуст.", main_menu(user_id)); return
-    cmd = "minc_mat" if mass else "inc_mat"
     header = "📦 МАССОВЫЙ ПРИХОД" if mass else "➕ ПРИХОД"
-    cats = {}
-    for r in rows:
-        cats.setdefault(r["category"] or "board", []).append(r)
-    ordered = sorted(cats.keys(),
-                     key=lambda c: CATEGORY_ORDER.index(c) if c in CATEGORY_ORDER else 99)
+    prefix = "minc" if mass else "inc"
     kb = VkKeyboard(one_time=False)
-    first = True
-    for cat in ordered:
-        if not first: kb.add_line()
-        first = False
-        kb.add_button(cat_label(cat), color=VkKeyboardColor.SECONDARY)
-        for r in cats[cat]:
-            kb.add_line()
-            lbl = r["decor"] or r["name"]
-            if r["thickness"]: lbl = f"{r['thickness']} {lbl}"
-            kb.add_callback_button(f"{lbl} ({r['qty']:g})",
-                                   color=VkKeyboardColor.PRIMARY,
-                                   payload={"command": f"{cmd}:{r['id']}"})
+    for i, c in enumerate(cats):
+        if i > 0: kb.add_line()
+        kb.add_callback_button(cat_label(c), color=VkKeyboardColor.PRIMARY,
+                               payload={"command": f"{prefix}_cat:{c}"})
     kb.add_line()
     if mass:
         kb.add_callback_button("✅ Завершить", color=VkKeyboardColor.POSITIVE,
                                payload={"command": "minc_done"})
+        kb.add_line()
+    kb.add_button("⬅️ В меню", color=VkKeyboardColor.SECONDARY)
+    send(vk, user_id, f"{header}. Выберите категорию:", kb.get_keyboard())
+
+
+def show_inc_list_in_cat(vk, user_id, cat, mass=False, page=1):
+    per_page = 8
+    with db() as con:
+        total = con.execute("SELECT COUNT(*) c FROM materials WHERE category=?",
+                            (cat,)).fetchone()["c"]
+    if total == 0:
+        send(vk, user_id, "В этой категории нет материалов.", back_kb()); return
+    pages = (total + per_page - 1) // per_page
+    if page < 1: page = 1
+    if page > pages: page = pages
+    offset = (page - 1) * per_page
+    with db() as con:
+        rows = con.execute("SELECT * FROM materials WHERE category=? "
+                           "ORDER BY thickness, decor, name LIMIT ? OFFSET ?",
+                           (cat, per_page, offset)).fetchall()
+    prefix = "minc" if mass else "inc"
+    header = "📦 МАССОВЫЙ ПРИХОД" if mass else "➕ ПРИХОД"
+    kb = VkKeyboard(one_time=False)
+    for i, r in enumerate(rows):
+        if i > 0: kb.add_line()
+        lbl = r["decor"] or r["name"]
+        if r["thickness"]: lbl = f"{r['thickness']} {lbl}"
+        kb.add_callback_button(f"{lbl} ({r['qty']:g})",
+                               color=VkKeyboardColor.PRIMARY,
+                               payload={"command": f"{prefix}_mat:{r['id']}"})
+    kb.add_line()
+    if page > 1:
+        kb.add_callback_button("◀️", color=VkKeyboardColor.SECONDARY,
+                               payload={"command": f"{prefix}_page:{cat}:{page-1}"})
+    kb.add_callback_button(f"{page}/{pages}", color=VkKeyboardColor.SECONDARY,
+                           payload={"command": "noop"})
+    if page < pages:
+        kb.add_callback_button("▶️", color=VkKeyboardColor.SECONDARY,
+                               payload={"command": f"{prefix}_page:{cat}:{page+1}"})
+    kb.add_line()
+    if mass:
+        kb.add_callback_button("✅ Завершить", color=VkKeyboardColor.POSITIVE,
+                               payload={"command": "minc_done"})
+        kb.add_line()
+    back_cmd = "minc_start" if mass else "inc_list"
+    kb.add_callback_button("⬅️ К категориям", color=VkKeyboardColor.SECONDARY,
+                           payload={"command": back_cmd})
     kb.add_line()
     kb.add_button("⬅️ В меню", color=VkKeyboardColor.SECONDARY)
-    send(vk, user_id, f"{header}. Выберите позицию:", kb.get_keyboard())
+    send(vk, user_id, f"{header} · {cat_label(cat)}:", kb.get_keyboard())
 
 
 def show_mass_inc_cart(vk, user_id):
@@ -936,28 +991,55 @@ EDIT_FIELDS = {"name": "📝 Название", "category": "📂 Категор
 
 
 def show_edit_list(vk, user_id):
-    rows = all_materials()
-    if not rows:
+    cats = distinct_categories()
+    if not cats:
         send(vk, user_id, "Склад пуст.", back_kb()); return
-    cats = {}
-    for r in rows:
-        cats.setdefault(r["category"] or "board", []).append(r)
-    ordered = sorted(cats.keys(),
-                     key=lambda c: CATEGORY_ORDER.index(c) if c in CATEGORY_ORDER else 99)
     kb = VkKeyboard(one_time=False)
-    first = True
-    for cat in ordered:
-        if not first: kb.add_line()
-        first = False
-        kb.add_button(cat_label(cat), color=VkKeyboardColor.SECONDARY)
-        for r in cats[cat]:
-            kb.add_line()
-            kb.add_callback_button(f"✏️ {material_label(r)}",
-                                   color=VkKeyboardColor.PRIMARY,
-                                   payload={"command": f"edit:{r['id']}"})
+    for i, c in enumerate(cats):
+        if i > 0: kb.add_line()
+        kb.add_callback_button(cat_label(c), color=VkKeyboardColor.PRIMARY,
+                               payload={"command": f"edit_cat:{c}"})
     kb.add_line()
     kb.add_button("⬅️ В меню", color=VkKeyboardColor.SECONDARY)
-    send(vk, user_id, "✏️ Выберите материал:", kb.get_keyboard())
+    send(vk, user_id, "✏️ Редактировать. Выберите категорию:", kb.get_keyboard())
+
+
+def show_edit_list_in_cat(vk, user_id, cat, page=1):
+    per_page = 8
+    with db() as con:
+        total = con.execute("SELECT COUNT(*) c FROM materials WHERE category=?",
+                            (cat,)).fetchone()["c"]
+    if total == 0:
+        send(vk, user_id, "В этой категории нет материалов.", back_kb()); return
+    pages = (total + per_page - 1) // per_page
+    if page < 1: page = 1
+    if page > pages: page = pages
+    offset = (page - 1) * per_page
+    with db() as con:
+        rows = con.execute("SELECT * FROM materials WHERE category=? "
+                           "ORDER BY thickness, decor, name LIMIT ? OFFSET ?",
+                           (cat, per_page, offset)).fetchall()
+    kb = VkKeyboard(one_time=False)
+    for i, r in enumerate(rows):
+        if i > 0: kb.add_line()
+        kb.add_callback_button(f"✏️ {material_label(r)}",
+                               color=VkKeyboardColor.PRIMARY,
+                               payload={"command": f"edit:{r['id']}"})
+    kb.add_line()
+    if page > 1:
+        kb.add_callback_button("◀️", color=VkKeyboardColor.SECONDARY,
+                               payload={"command": f"edit_page:{cat}:{page-1}"})
+    kb.add_callback_button(f"{page}/{pages}", color=VkKeyboardColor.SECONDARY,
+                           payload={"command": "noop"})
+    if page < pages:
+        kb.add_callback_button("▶️", color=VkKeyboardColor.SECONDARY,
+                               payload={"command": f"edit_page:{cat}:{page+1}"})
+    kb.add_line()
+    kb.add_callback_button("⬅️ К категориям", color=VkKeyboardColor.SECONDARY,
+                           payload={"command": "edit_list"})
+    kb.add_line()
+    kb.add_button("⬅️ В меню", color=VkKeyboardColor.SECONDARY)
+    send(vk, user_id, f"✏️ {cat_label(cat)} — выберите материал:", kb.get_keyboard())
 
 
 def show_edit_fields(vk, user_id, mid):
@@ -975,6 +1057,10 @@ def show_edit_fields(vk, user_id, mid):
         kb.add_callback_button(f"{label}: {val if val not in (None, '') else '—'}",
                                color=VkKeyboardColor.PRIMARY,
                                payload={"command": f"editf:{mid}:{key}"})
+    kb.add_line()
+    cat = m["category"] or "board"
+    kb.add_callback_button("⬅️ К списку", color=VkKeyboardColor.SECONDARY,
+                           payload={"command": f"edit_cat:{cat}"})
     kb.add_line()
     kb.add_button("⬅️ В меню", color=VkKeyboardColor.SECONDARY)
     send(vk, user_id, f"✏️ {full_label(m)}\nВыберите поле:", kb.get_keyboard())
@@ -999,39 +1085,67 @@ def do_edit(vk, user_id, mid, field, value):
 
 # ======================= УДАЛЕНИЕ =======================
 def show_delete_list(vk, user_id):
-    rows = all_materials()
-    if not rows:
+    cats = distinct_categories()
+    if not cats:
         send(vk, user_id, "Склад пуст.", back_kb()); return
-    cats = {}
-    for r in rows:
-        cats.setdefault(r["category"] or "board", []).append(r)
-    ordered = sorted(cats.keys(),
-                     key=lambda c: CATEGORY_ORDER.index(c) if c in CATEGORY_ORDER else 99)
     kb = VkKeyboard(one_time=False)
-    first = True
-    for cat in ordered:
-        if not first: kb.add_line()
-        first = False
-        kb.add_button(cat_label(cat), color=VkKeyboardColor.SECONDARY)
-        for r in cats[cat]:
-            kb.add_line()
-            kb.add_callback_button(f"🗑 {material_label(r)}",
-                                   color=VkKeyboardColor.NEGATIVE,
-                                   payload={"command": f"delmat:{r['id']}"})
+    for i, c in enumerate(cats):
+        if i > 0: kb.add_line()
+        kb.add_callback_button(cat_label(c), color=VkKeyboardColor.NEGATIVE,
+                               payload={"command": f"del_cat:{c}"})
     kb.add_line()
     kb.add_button("⬅️ В меню", color=VkKeyboardColor.SECONDARY)
-    send(vk, user_id, "🗑 Выберите материал:", kb.get_keyboard())
+    send(vk, user_id, "🗑 Удалить. Выберите категорию:", kb.get_keyboard())
+
+
+def show_delete_list_in_cat(vk, user_id, cat, page=1):
+    per_page = 8
+    with db() as con:
+        total = con.execute("SELECT COUNT(*) c FROM materials WHERE category=?",
+                            (cat,)).fetchone()["c"]
+    if total == 0:
+        send(vk, user_id, "В этой категории нет материалов.", back_kb()); return
+    pages = (total + per_page - 1) // per_page
+    if page < 1: page = 1
+    if page > pages: page = pages
+    offset = (page - 1) * per_page
+    with db() as con:
+        rows = con.execute("SELECT * FROM materials WHERE category=? "
+                           "ORDER BY thickness, decor, name LIMIT ? OFFSET ?",
+                           (cat, per_page, offset)).fetchall()
+    kb = VkKeyboard(one_time=False)
+    for i, r in enumerate(rows):
+        if i > 0: kb.add_line()
+        kb.add_callback_button(f"🗑 {material_label(r)}",
+                               color=VkKeyboardColor.NEGATIVE,
+                               payload={"command": f"delmat:{r['id']}"})
+    kb.add_line()
+    if page > 1:
+        kb.add_callback_button("◀️", color=VkKeyboardColor.SECONDARY,
+                               payload={"command": f"del_page:{cat}:{page-1}"})
+    kb.add_callback_button(f"{page}/{pages}", color=VkKeyboardColor.SECONDARY,
+                           payload={"command": "noop"})
+    if page < pages:
+        kb.add_callback_button("▶️", color=VkKeyboardColor.SECONDARY,
+                               payload={"command": f"del_page:{cat}:{page+1}"})
+    kb.add_line()
+    kb.add_callback_button("⬅️ К категориям", color=VkKeyboardColor.SECONDARY,
+                           payload={"command": "del_list"})
+    kb.add_line()
+    kb.add_button("⬅️ В меню", color=VkKeyboardColor.SECONDARY)
+    send(vk, user_id, f"🗑 {cat_label(cat)} — выберите материал:", kb.get_keyboard())
 
 
 def show_delete_confirm(vk, user_id, mid):
     m = get_material(mid)
     if not m:
         send(vk, user_id, "Материал не найден.", back_kb()); return
+    cat = m["category"] or "board"
     kb = VkKeyboard(one_time=False)
     kb.add_callback_button("✅ Да, удалить", color=VkKeyboardColor.NEGATIVE,
                            payload={"command": f"delmat_ok:{mid}"})
     kb.add_callback_button("❌ Отмена", color=VkKeyboardColor.SECONDARY,
-                           payload={"command": "del_list"})
+                           payload={"command": f"del_cat:{cat}"})
     send(vk, user_id, f"🗑 Удалить материал?\n\n{full_label(m)}\n"
                       f"Остаток: {m['qty']:g} {m['unit']}", kb.get_keyboard())
 
@@ -1121,6 +1235,80 @@ def show_users(vk, user_id):
     send(vk, user_id, "\n".join(lines), back_kb())
 
 
+# ======================= НАВИГАЦИЯ В НОМЕНКЛАТУРЕ =======================
+def _new_step_send(vk, uid, step):
+    st = get_state(uid)
+    data = dict(st["data"])
+    cat = data.get("category", "board")
+    kb = VkKeyboard(one_time=False)
+    if step > 2:
+        kb.add_callback_button("⬅️ Назад", color=VkKeyboardColor.SECONDARY,
+                               payload={"command": "newnav:back"})
+        kb.add_callback_button("❌ Отменить", color=VkKeyboardColor.NEGATIVE,
+                               payload={"command": "newnav:cancel"})
+    else:
+        kb.add_callback_button("⬅️ К категориям", color=VkKeyboardColor.SECONDARY,
+                               payload={"command": "newnav:cat"})
+        kb.add_callback_button("❌ Отменить", color=VkKeyboardColor.NEGATIVE,
+                               payload={"command": "newnav:cancel"})
+    kb.add_line()
+    kb.add_button("⬅️ В меню", color=VkKeyboardColor.SECONDARY)
+
+    if step == 2:
+        if CATEGORIES[cat]["has_thickness"]:
+            send(vk, uid, "🆕 Шаг 2. Введите толщину (10мм, 16мм). Или «-»:",
+                 kb.get_keyboard())
+        else:
+            send(vk, uid, "🆕 Шаг 2. Введите декор/цвет. Или «-»:",
+                 kb.get_keyboard())
+    elif step == 3:
+        p = [x for x in (data.get("thickness"), data.get("decor")) if x]
+        auto = ("Материал " + " ".join(p)).strip() if p else ""
+        if auto:
+            send(vk, uid, f"📝 Шаг 3. Авто-имя: «{auto}»\nВведите своё или «-»:",
+                 kb.get_keyboard())
+        else:
+            send(vk, uid, "📝 Шаг 3. Название материала:", kb.get_keyboard())
+    elif step == 4:
+        send(vk, uid, "🔢 Шаг 4. Начальный остаток:", kb.get_keyboard())
+    elif step == 5:
+        send(vk, uid, "📐 Шаг 5. Единица (шт, м, лист, кг). Или «-» для шт:",
+             kb.get_keyboard())
+
+
+def _newnav_back(vk, uid):
+    st = get_state(uid)
+    state = st["state"]
+    data = dict(st["data"])
+    cat = data.get("category", "board")
+    if state == "new_decor":
+        set_state(uid, "new_thickness", category=cat)
+        _new_step_send(vk, uid, 2)
+    elif state == "new_name":
+        if CATEGORIES[cat]["has_thickness"]:
+            set_state(uid, "new_decor", category=cat,
+                      thickness=data.get("thickness", ""))
+            _new_step_send(vk, uid, 3)
+        else:
+            set_state(uid, "new_thickness", category=cat)
+            _new_step_send(vk, uid, 2)
+    elif state == "new_qty":
+        set_state(uid, "new_name", category=cat,
+                  thickness=data.get("thickness", ""),
+                  decor=data.get("decor", ""))
+        _new_step_send(vk, uid, 4)
+    elif state == "new_unit":
+        set_state(uid, "new_qty", category=cat,
+                  thickness=data.get("thickness", ""),
+                  decor=data.get("decor", ""),
+                  name=data.get("name", ""),
+                  qty=data.get("qty", 0))
+        _new_step_send(vk, uid, 5)
+    else:
+        clear_state(uid)
+        start_new_material(vk, uid)
+
+
 # ======================= НОВАЯ НОМЕНКЛАТУРА =======================
 def start_new_material(vk, user_id):
     kb = VkKeyboard(one_time=False)
@@ -1179,6 +1367,10 @@ def show_inventory_item(vk, user_id):
         set_state(user_id, "inv_qty", **data)
         show_inventory_item(vk, user_id); return
     kb = VkKeyboard(one_time=False)
+    if idx > 0:
+        kb.add_callback_button("⬅️ К предыдущей", color=VkKeyboardColor.SECONDARY,
+                               payload={"command": "inv_prev"})
+        kb.add_line()
     kb.add_callback_button("⏭ Пропустить", color=VkKeyboardColor.SECONDARY,
                            payload={"command": "inv_skip"})
     kb.add_line()
@@ -1235,11 +1427,23 @@ def handle_callback(vk, user_id, command):
     if command == "noop":
         return
 
+    # --- инвентаризация ---
     if command.startswith("inv_cat:"):
         if not is_warehouse(user_id):
             send(vk, user_id, "Нет доступа."); return
         cat = command.split(":", 1)[1]
         inventory_begin(vk, user_id, cat); return
+    if command == "inv_prev":
+        if not is_warehouse(user_id):
+            send(vk, user_id, "Нет доступа."); return
+        st = get_state(user_id)
+        data = dict(st["data"])
+        idx = data.get("idx", 0)
+        if idx > 0:
+            data["idx"] = idx - 1
+            set_state(user_id, "inv_qty", **data)
+            show_inventory_item(vk, user_id)
+        return
     if command == "inv_skip":
         if not is_warehouse(user_id):
             send(vk, user_id, "Нет доступа."); return
@@ -1253,17 +1457,26 @@ def handle_callback(vk, user_id, command):
             send(vk, user_id, "Нет доступа."); return
         finish_inventory(vk, user_id); return
 
+    # --- новая номенклатура: навигация ---
+    if command == "newnav:back":
+        if not is_warehouse(user_id):
+            send(vk, user_id, "Нет доступа."); return
+        _newnav_back(vk, user_id); return
+    if command == "newnav:cancel":
+        clear_state(user_id)
+        send(vk, user_id, "Отменено.", main_menu(user_id)); return
+    if command == "newnav:cat":
+        clear_state(user_id)
+        start_new_material(vk, user_id); return
     if command.startswith("newcat:"):
         cat = command.split(":", 1)[1]
         if cat not in CATEGORIES:
             send(vk, user_id, "Неизвестная категория."); return
         set_state(user_id, "new_thickness", category=cat)
-        if CATEGORIES[cat]["has_thickness"]:
-            send(vk, user_id, "🆕 Шаг 2/5. Введите толщину (10мм, 16мм). Или «-».")
-        else:
-            send(vk, user_id, "🆕 Шаг 2/5. Введите декор/цвет (или «-»).")
+        _new_step_send(vk, user_id, 2)
         return
 
+    # --- корзина ---
     if command.startswith("cart_cat:"):
         cat = command.split(":", 1)[1]
         st = get_state(user_id)
@@ -1315,6 +1528,7 @@ def handle_callback(vk, user_id, command):
                   default_plan=st["data"].get("default_plan", ""))
         show_categories_for_cart(vk, user_id); return
 
+    # --- план ---
     if command.startswith("plan_page:"):
         page = safe_int(command.split(":", 1)[1]) or 1
         st = get_state(user_id)
@@ -1353,6 +1567,7 @@ def handle_callback(vk, user_id, command):
                   editing_index=st["data"].get("editing_index", -1))
         send(vk, user_id, "🔢 Введите номер плана (1–2000):"); return
 
+    # --- заявки ---
     if command == "wh_requests":
         if not is_driver(user_id):
             send(vk, user_id, "Нет доступа."); return
@@ -1383,20 +1598,52 @@ def handle_callback(vk, user_id, command):
         reject_request(vk, user_id, rid)
         show_request_details(vk, user_id, rid); return
 
+    # --- приходы ---
     if not is_driver(user_id):
         send(vk, user_id, "Нет доступа."); return
+    if command.startswith("inc_cat:"):
+        cat = command.split(":", 1)[1]
+        show_inc_list_in_cat(vk, user_id, cat, mass=False, page=1); return
+    if command.startswith("inc_page:"):
+        parts = command.split(":", 2)
+        if len(parts) == 3:
+            cat = parts[1]; page = safe_int(parts[2]) or 1
+            show_inc_list_in_cat(vk, user_id, cat, mass=False, page=page)
+        return
+    if command.startswith("minc_cat:"):
+        cat = command.split(":", 1)[1]
+        show_inc_list_in_cat(vk, user_id, cat, mass=True, page=1); return
+    if command.startswith("minc_page:"):
+        parts = command.split(":", 2)
+        if len(parts) == 3:
+            cat = parts[1]; page = safe_int(parts[2]) or 1
+            show_inc_list_in_cat(vk, user_id, cat, mass=True, page=page)
+        return
     if command.startswith("inc_mat:"):
         mid = safe_int(command.split(":", 1)[1]); m = get_material(mid) if mid else None
         if not m: send(vk, user_id, "Материал не найден."); return
         set_state(user_id, "inc_qty", material_id=mid)
+        cat = m["category"] or "board"
+        kb = VkKeyboard(one_time=False)
+        kb.add_callback_button("⬅️ К списку", color=VkKeyboardColor.SECONDARY,
+                               payload={"command": f"inc_cat:{cat}"})
+        kb.add_line()
+        kb.add_button("⬅️ В меню", color=VkKeyboardColor.SECONDARY)
         send(vk, user_id, f"➕ {full_label(m)}\nОстаток: {m['qty']:g} {m['unit']}\n\n"
-                          f"Введите количество:"); return
+                          f"Введите количество:", kb.get_keyboard()); return
     if command.startswith("minc_mat:"):
         mid = safe_int(command.split(":", 1)[1]); m = get_material(mid) if mid else None
         if not m: send(vk, user_id, "Материал не найден."); return
         st = get_state(user_id)
         set_state(user_id, "minc_qty", mass_cart=st["data"].get("mass_cart", []), material_id=mid)
-        send(vk, user_id, f"📦 {full_label(m)}\nВведите количество:"); return
+        cat = m["category"] or "board"
+        kb = VkKeyboard(one_time=False)
+        kb.add_callback_button("⬅️ К списку", color=VkKeyboardColor.SECONDARY,
+                               payload={"command": f"minc_cat:{cat}"})
+        kb.add_line()
+        kb.add_button("⬅️ В меню", color=VkKeyboardColor.SECONDARY)
+        send(vk, user_id, f"📦 {full_label(m)}\nВведите количество:",
+             kb.get_keyboard()); return
     if command == "minc_more":
         st = get_state(user_id)
         set_state(user_id, "minc_choose", mass_cart=st["data"].get("mass_cart", []))
@@ -1404,10 +1651,20 @@ def handle_callback(vk, user_id, command):
     if command == "minc_done":
         finish_mass_inc(vk, user_id); return
 
+    # --- номенклатура ---
     if not is_warehouse(user_id):
         send(vk, user_id, "Нет доступа."); return
     if command == "edit_list":
         show_edit_list(vk, user_id); return
+    if command.startswith("edit_cat:"):
+        cat = command.split(":", 1)[1]
+        show_edit_list_in_cat(vk, user_id, cat, 1); return
+    if command.startswith("edit_page:"):
+        parts = command.split(":", 2)
+        if len(parts) == 3:
+            cat = parts[1]; page = safe_int(parts[2]) or 1
+            show_edit_list_in_cat(vk, user_id, cat, page)
+        return
     if command.startswith("edit:"):
         mid = safe_int(command.split(":", 1)[1])
         if mid is not None: show_edit_fields(vk, user_id, mid)
@@ -1418,11 +1675,28 @@ def handle_callback(vk, user_id, command):
             mid = safe_int(parts[1]); field = parts[2]
             if mid is not None and field in EDIT_FIELDS:
                 set_state(user_id, "edit_value", mid=mid, field=field)
+                kb = VkKeyboard(one_time=False)
+                kb.add_callback_button("⬅️ К полям", color=VkKeyboardColor.SECONDARY,
+                                       payload={"command": f"edit:{mid}"})
+                kb.add_callback_button("⬅️ К списку", color=VkKeyboardColor.SECONDARY,
+                                       payload={"command": "edit_list"})
+                kb.add_line()
+                kb.add_button("⬅️ В меню", color=VkKeyboardColor.SECONDARY)
                 send(vk, user_id,
-                     f"✏️ Новое значение для «{EDIT_FIELDS.get(field, field)}»:")
+                     f"✏️ Новое значение для «{EDIT_FIELDS.get(field, field)}»:",
+                     kb.get_keyboard())
         return
     if command == "del_list":
         show_delete_list(vk, user_id); return
+    if command.startswith("del_cat:"):
+        cat = command.split(":", 1)[1]
+        show_delete_list_in_cat(vk, user_id, cat, 1); return
+    if command.startswith("del_page:"):
+        parts = command.split(":", 2)
+        if len(parts) == 3:
+            cat = parts[1]; page = safe_int(parts[2]) or 1
+            show_delete_list_in_cat(vk, user_id, cat, page)
+        return
     if command.startswith("delmat:"):
         mid = safe_int(command.split(":", 1)[1])
         if mid is not None: show_delete_confirm(vk, user_id, mid)
@@ -1556,21 +1830,14 @@ def handle_message(vk, user_id, text):
         val = "" if text.strip() == "-" else text.strip()
         if CATEGORIES[cat]["has_thickness"]:
             set_state(user_id, "new_decor", category=cat, thickness=val)
-            send(vk, user_id, "🎨 Шаг 3/5. Декор (Дуб, Орех). Или «-»."); return
         else:
             set_state(user_id, "new_name", category=cat, thickness="", decor=val)
-            p = [x for x in (val,) if x]
-            auto = ("Материал " + " ".join(p)).strip() if p else ""
-            send(vk, user_id, f"📝 Шаг 3/5. Авто-имя: «{auto}»\nВведите своё или «-»."
-                 if auto else "📝 Шаг 3/5. Название материала:"); return
+        _new_step_send(vk, user_id, 3); return
     if state == "new_decor":
         decor = "" if text.strip() == "-" else text.strip()
         set_state(user_id, "new_name", category=data["category"],
                   thickness=data["thickness"], decor=decor)
-        p = [x for x in (data["thickness"], decor) if x]
-        auto = ("Материал " + " ".join(p)).strip() if p else ""
-        send(vk, user_id, f"📝 Шаг 3/5. Авто-имя: «{auto}»\nВведите своё или «-»."
-             if auto else "📝 Шаг 3/5. Название материала:"); return
+        _new_step_send(vk, user_id, 3); return
     if state == "new_name":
         raw = text.strip()
         if raw == "-":
@@ -1582,7 +1849,7 @@ def handle_message(vk, user_id, text):
         set_state(user_id, "new_qty", category=data["category"],
                   thickness=data.get("thickness", ""),
                   decor=data.get("decor", ""), name=name)
-        send(vk, user_id, "🔢 Шаг 4/5. Начальный остаток:"); return
+        _new_step_send(vk, user_id, 4); return
     if state == "new_qty":
         try: qty = float(text.replace(",", "."))
         except ValueError:
@@ -1590,7 +1857,7 @@ def handle_message(vk, user_id, text):
         set_state(user_id, "new_unit", category=data["category"],
                   thickness=data.get("thickness", ""),
                   decor=data.get("decor", ""), name=data["name"], qty=qty)
-        send(vk, user_id, "📐 Шаг 5/5. Единица (шт, м, лист, кг). Или «-» для шт."); return
+        _new_step_send(vk, user_id, 5); return
     if state == "new_unit":
         unit = "шт" if text.strip() == "-" else text.strip()
         with db() as con:
