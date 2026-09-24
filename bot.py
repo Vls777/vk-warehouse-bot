@@ -485,10 +485,39 @@ def show_thicknesses_for_cart(vk, user_id, cat):
     send(vk, user_id, f"{cat_label(cat)}. Шаг 2. Выберите толщину:", kb.get_keyboard())
 
 
-def show_materials_for_cart(vk, user_id, cat, th=None):
-    rows = materials_by_category(cat, th)
-    if not rows:
+def show_materials_for_cart(vk, user_id, cat, th=None, page=1):
+    per_page = 6
+    with db() as con:
+        if th is None:
+            total = con.execute("SELECT COUNT(*) c FROM materials WHERE category=?",
+                                (cat,)).fetchone()["c"]
+        elif th == "__none__":
+            total = con.execute("SELECT COUNT(*) c FROM materials WHERE category=? "
+                                "AND COALESCE(thickness,'')=''", (cat,)).fetchone()["c"]
+        else:
+            total = con.execute("SELECT COUNT(*) c FROM materials WHERE category=? "
+                                "AND COALESCE(thickness,'')=?", (cat, th)).fetchone()["c"]
+    if total == 0:
         send(vk, user_id, "Нет материалов.", main_menu(user_id)); return
+    pages = (total + per_page - 1) // per_page
+    if page < 1: page = 1
+    if page > pages: page = pages
+    offset = (page - 1) * per_page
+    with db() as con:
+        if th is None:
+            rows = con.execute("SELECT * FROM materials WHERE category=? "
+                               "ORDER BY decor, name LIMIT ? OFFSET ?",
+                               (cat, per_page, offset)).fetchall()
+        elif th == "__none__":
+            rows = con.execute("SELECT * FROM materials WHERE category=? "
+                               "AND COALESCE(thickness,'')='' "
+                               "ORDER BY decor, name LIMIT ? OFFSET ?",
+                               (cat, per_page, offset)).fetchall()
+        else:
+            rows = con.execute("SELECT * FROM materials WHERE category=? "
+                               "AND COALESCE(thickness,'')=? "
+                               "ORDER BY decor, name LIMIT ? OFFSET ?",
+                               (cat, th, per_page, offset)).fetchall()
     st = get_state(user_id)
     cart = list(st["data"].get("cart", []))
     default_plan = st["data"].get("default_plan", "")
@@ -499,6 +528,15 @@ def show_materials_for_cart(vk, user_id, cat, th=None):
         kb.add_callback_button(f"{label} — {m['qty']:g} {m['unit']}",
                                color=VkKeyboardColor.PRIMARY,
                                payload={"command": f"cart_add:{m['id']}"})
+    kb.add_line()
+    if page > 1:
+        kb.add_callback_button("◀️", color=VkKeyboardColor.SECONDARY,
+                               payload={"command": f"cart_mat_page:{cat}:{th}:{page-1}"})
+    kb.add_callback_button(f"{page}/{pages}", color=VkKeyboardColor.SECONDARY,
+                           payload={"command": "noop"})
+    if page < pages:
+        kb.add_callback_button("▶️", color=VkKeyboardColor.SECONDARY,
+                               payload={"command": f"cart_mat_page:{cat}:{th}:{page+1}"})
     kb.add_line()
     if cart:
         kb.add_callback_button("🛒 Корзина", color=VkKeyboardColor.POSITIVE,
@@ -1488,7 +1526,14 @@ def handle_callback(vk, user_id, command):
             set_state(user_id, "cart_choose", cart=list(st["data"].get("cart", [])),
                       default_plan=st["data"].get("default_plan", ""),
                       category=cat, thickness=th)
-            show_materials_for_cart(vk, user_id, cat, th); return
+            show_materials_for_cart(vk, user_id, cat, th, 1); return
+    if command.startswith("cart_mat_page:"):
+        rest = command.split(":", 3)[1:]
+        if len(rest) >= 3:
+            cat, th_s, page_s = rest[0], rest[1], rest[2]
+            page = safe_int(page_s) or 1
+            th_val = None if th_s == "None" else th_s
+            show_materials_for_cart(vk, user_id, cat, th_val, page); return
     if command.startswith("cart_add:"):
         mid = safe_int(command.split(":", 1)[1])
         if mid is not None: add_to_cart(vk, user_id, mid)
