@@ -260,37 +260,51 @@ def _find_edge_main():
     with db() as con:
         rows = con.execute("SELECT * FROM materials WHERE category='edge' "
                            "AND hidden=1").fetchall()
+    found = None
     for r in rows:
         if (r["name"] or "").strip() == "Кромка":
-            return r
+            found = r
+            break
+    if found is None:
+        with db() as con:
+            con.execute("INSERT INTO materials (category,name,unit,qty,thickness,decor,"
+                        "hidden,updated_at) VALUES ('edge','Кромка','м',0,'','',1,?)",
+                        (now_str(),))
+            con.commit()
+        with db() as con:
+            return con.execute("SELECT * FROM materials WHERE category='edge' AND hidden=1 "
+                               "AND name='Кромка' LIMIT 1").fetchone()
     with db() as con:
-        con.execute("INSERT INTO materials (category,name,unit,qty,thickness,decor,"
-                    "hidden,updated_at) VALUES ('edge','Кромка','м',0,'','',1,?)",
-                    (now_str(),))
+        con.execute("UPDATE materials SET unit='м', updated_at=? WHERE id=?",
+                    (now_str(), found["id"]))
         con.commit()
-        return con.execute("SELECT * FROM materials WHERE category='edge' AND hidden=1 "
-                           "AND name='Кромка' LIMIT 1").fetchone()
+        return con.execute("SELECT * FROM materials WHERE id=?", (found["id"],)).fetchone()
 
 
 def _find_edge_glue():
     with db() as con:
         rows = con.execute("SELECT * FROM materials WHERE category='edge' "
                            "AND hidden=1").fetchall()
-    for r in rows:
-        nm = (r["name"] or "").lower()
-        if "клей" in nm and (r["unit"] or "").lower().startswith("канист"):
-            return r
+    found = None
     for r in rows:
         nm = (r["name"] or "").lower()
         if "клей" in nm:
-            return r
+            found = r
+            break
+    if found is None:
+        with db() as con:
+            con.execute("INSERT INTO materials (category,name,unit,qty,thickness,decor,"
+                        "hidden,updated_at) VALUES ('edge','Клей кромочный','канистра',0,'','',1,?)",
+                        (now_str(),))
+            con.commit()
+        with db() as con:
+            return con.execute("SELECT * FROM materials WHERE category='edge' AND hidden=1 "
+                               "AND name='Клей кромочный' LIMIT 1").fetchone()
     with db() as con:
-        con.execute("INSERT INTO materials (category,name,unit,qty,thickness,decor,"
-                    "hidden,updated_at) VALUES ('edge','Клей кромочный','канистра',0,'','',1,?)",
-                    (now_str(),))
+        con.execute("UPDATE materials SET name='Клей кромочный', unit='канистра', "
+                    "updated_at=? WHERE id=?", (now_str(), found["id"]))
         con.commit()
-        return con.execute("SELECT * FROM materials WHERE category='edge' AND hidden=1 "
-                           "AND name='Клей кромочный' LIMIT 1").fetchone()
+        return con.execute("SELECT * FROM materials WHERE id=?", (found["id"],)).fetchone()
 
 
 def _is_film_material(m):
@@ -314,7 +328,6 @@ def _find_film_glue():
 
 
 def _qty_kb(prefix):
-    """Клавиатура выбора количества 1-9 + ручной ввод."""
     kb = VkKeyboard(one_time=False)
     for row_start in (1, 4, 7):
         for i in range(row_start, row_start + 3):
@@ -1231,7 +1244,6 @@ def issue_request(vk, user_id, rid):
                     else:
                         summary.append(f"{full_label(m)} (план {plan_it})")
                     continue
-                # Клей МДФ — тоже «канистр», не списываем как обычно
                 is_film_glue = (m["category"] or "") == "film" and "клей" in (m["name"] or "").lower()
                 if is_film_glue:
                     new_qty = m["qty"] - it["qty"]
@@ -1276,7 +1288,6 @@ def issue_request(vk, user_id, rid):
              f"✅ Заявка №{rid} выполнена (план {plan_str}):\n" + "\n".join(summary))
     except Exception: pass
 
-    # Уведомление водителям
     lines_drv = [
         f"🚚 Заказ №{rid} собран, можно увозить в цех",
         "",
@@ -1975,7 +1986,7 @@ def handle_callback(vk, user_id, command):
                   default_plan=st["data"].get("default_plan", ""))
         show_categories_for_cart(vk, user_id); return
 
-    # --- Кнопки количества: плёнка ---
+    # --- Плёнка: количество кнопками ---
     if command.startswith("fq:"):
         val = command.split(":", 1)[1]
         st = get_state(user_id)
@@ -2021,7 +2032,7 @@ def handle_callback(vk, user_id, command):
             return
         return
 
-    # --- Кнопки количества: клей МДФ ---
+    # --- Клей МДФ: количество кнопками ---
     if command.startswith("fmg:"):
         val = command.split(":", 1)[1]
         st = get_state(user_id)
