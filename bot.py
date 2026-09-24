@@ -1,7 +1,5 @@
 # -*- coding: utf-8 -*-
-"""
-VK-бот «Склад пиломатериалов».
-"""
+"""VK-бот «Склад пиломатериалов»."""
 
 import sqlite3
 import os
@@ -16,12 +14,8 @@ GROUP_ID = int(os.getenv("GROUP_ID", 0))
 ADMIN_IDS = {123456789}
 DB_PATH = "/app/data/warehouse.db"
 
-STATUS = {
-    "new": "🆕 новая",
-    "approved": "🔄 в работе",
-    "issued": "✅ выдана",
-    "rejected": "❌ отклонена",
-}
+STATUS = {"new": "🆕 новая", "approved": "🔄 в работе",
+          "issued": "✅ выдана", "rejected": "❌ отклонена"}
 PLAN_MIN, PLAN_MAX = 1, 2000
 PLAN_BUTTONS_PER_PAGE = 10
 
@@ -36,32 +30,22 @@ def db():
 def init_db():
     with db() as con:
         con.executescript("""
-            CREATE TABLE IF NOT EXISTS users (
-                user_id INTEGER PRIMARY KEY, username TEXT, full_name TEXT,
-                role TEXT NOT NULL DEFAULT 'operator',
-                blocked INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS materials (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+            CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, username TEXT,
+                full_name TEXT, role TEXT NOT NULL DEFAULT 'operator',
+                blocked INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS materials (id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL, unit TEXT NOT NULL DEFAULT 'шт',
-                qty REAL NOT NULL DEFAULT 0,
-                updated_at TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS requests (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL, material_id INTEGER NOT NULL,
-                qty REAL NOT NULL, comment TEXT, plan TEXT DEFAULT '',
-                status TEXT NOT NULL DEFAULT 'new',
+                qty REAL NOT NULL DEFAULT 0, updated_at TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS requests (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL, material_id INTEGER NOT NULL, qty REAL NOT NULL,
+                comment TEXT, plan TEXT DEFAULT '', status TEXT NOT NULL DEFAULT 'new',
                 created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS request_items (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+            CREATE TABLE IF NOT EXISTS request_items (id INTEGER PRIMARY KEY AUTOINCREMENT,
                 request_id INTEGER NOT NULL, material_id INTEGER NOT NULL,
                 qty REAL NOT NULL, status TEXT NOT NULL DEFAULT 'new');
-            CREATE TABLE IF NOT EXISTS logs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER, action TEXT NOT NULL, details TEXT,
-                created_at TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS plans (
-                number INTEGER PRIMARY KEY, used_at TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS logs (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER, action TEXT NOT NULL, details TEXT, created_at TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS plans (number INTEGER PRIMARY KEY, used_at TEXT NOT NULL);
         """)
         def cols(t):
             return [r["name"] for r in con.execute(f"PRAGMA table_info({t})").fetchall()]
@@ -75,20 +59,17 @@ def init_db():
             con.execute("ALTER TABLE users ADD COLUMN blocked INTEGER NOT NULL DEFAULT 0")
         if con.execute("SELECT COUNT(*) c FROM materials").fetchone()["c"] == 0:
             now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            seed = [
-                ("Доска 10мм Дуб", "шт", 120, "10мм", "Дуб"),
-                ("Доска 10мм Орех", "шт", 80, "10мм", "Орех"),
-                ("Доска 10мм Венге", "шт", 60, "10мм", "Венге"),
-                ("Доска 16мм Дуб", "шт", 150, "16мм", "Дуб"),
-                ("Доска 16мм Орех", "шт", 100, "16мм", "Орех"),
-                ("Доска 16мм Ясень", "шт", 70, "16мм", "Ясень"),
-                ("Доска 22мм Дуб", "шт", 90, "22мм", "Дуб"),
-                ("Доска 22мм Венге", "шт", 50, "22мм", "Венге"),
-                ("Доска 22мм Клён", "шт", 40, "22мм", "Клён"),
-            ]
-            con.executemany(
-                "INSERT INTO materials (name, unit, qty, thickness, decor, updated_at) "
-                "VALUES (?,?,?,?,?,?)", [(*s, now) for s in seed])
+            seed = [("Доска 10мм Дуб", "шт", 120, "10мм", "Дуб"),
+                    ("Доска 10мм Орех", "шт", 80, "10мм", "Орех"),
+                    ("Доска 10мм Венге", "шт", 60, "10мм", "Венге"),
+                    ("Доска 16мм Дуб", "шт", 150, "16мм", "Дуб"),
+                    ("Доска 16мм Орех", "шт", 100, "16мм", "Орех"),
+                    ("Доска 16мм Ясень", "шт", 70, "16мм", "Ясень"),
+                    ("Доска 22мм Дуб", "шт", 90, "22мм", "Дуб"),
+                    ("Доска 22мм Венге", "шт", 50, "22мм", "Венге"),
+                    ("Доска 22мм Клён", "шт", 40, "22мм", "Клён")]
+            con.executemany("INSERT INTO materials (name,unit,qty,thickness,decor,updated_at) "
+                            "VALUES (?,?,?,?,?,?)", [(*s, now) for s in seed])
         con.commit()
 
 
@@ -98,8 +79,8 @@ def now_str():
 
 def log_action(user_id, action, details=""):
     with db() as con:
-        con.execute("INSERT INTO logs (user_id, action, details, created_at) "
-                    "VALUES (?,?,?,?)", (user_id, action, details, now_str()))
+        con.execute("INSERT INTO logs (user_id,action,details,created_at) VALUES (?,?,?,?)",
+                    (user_id, action, details, now_str()))
         con.commit()
 
 
@@ -115,10 +96,8 @@ def ensure_user(vk, user_id):
         full_name, username = str(user_id), ""
     role = "admin" if user_id in ADMIN_IDS else "operator"
     with db() as con:
-        con.execute("INSERT OR IGNORE INTO users "
-                    "(user_id, username, full_name, role, blocked, created_at) "
-                    "VALUES (?,?,?,?,0,?)",
-                    (user_id, username, full_name, role, now_str()))
+        con.execute("INSERT OR IGNORE INTO users (user_id,username,full_name,role,blocked,created_at) "
+                    "VALUES (?,?,?,?,0,?)", (user_id, username, full_name, role, now_str()))
         con.commit()
         return con.execute("SELECT * FROM users WHERE user_id=?", (user_id,)).fetchone()
 
@@ -148,19 +127,19 @@ def get_material(mid):
 
 def all_materials():
     with db() as con:
-        return con.execute("SELECT * FROM materials ORDER BY thickness, decor, name").fetchall()
+        return con.execute("SELECT * FROM materials ORDER BY thickness,decor,name").fetchall()
 
 
 def distinct_thicknesses():
     with db() as con:
         rows = con.execute("SELECT DISTINCT thickness FROM materials "
-                           "WHERE COALESCE(thickness,'') != '' ORDER BY thickness").fetchall()
+                           "WHERE COALESCE(thickness,'')!='' ORDER BY thickness").fetchall()
     return [r["thickness"] for r in rows]
 
 
 def decors_by_thickness(th):
     with db() as con:
-        return con.execute("SELECT * FROM materials WHERE COALESCE(thickness,'') = ? "
+        return con.execute("SELECT * FROM materials WHERE COALESCE(thickness,'')=? "
                            "ORDER BY decor", (th,)).fetchall()
 
 
@@ -171,8 +150,7 @@ def material_label(m):
 
 def register_plan(n):
     with db() as con:
-        con.execute("INSERT OR REPLACE INTO plans (number, used_at) VALUES (?,?)",
-                    (n, now_str()))
+        con.execute("INSERT OR REPLACE INTO plans (number,used_at) VALUES (?,?)", (n, now_str()))
         con.commit()
 
 
@@ -188,16 +166,13 @@ def suggested_center():
 
 
 def plan_page_items(page):
-    """Окно из PLAN_BUTTONS_PER_PAGE номеров, центрированное на последнем плане."""
     center = suggested_center()
     half = PLAN_BUTTONS_PER_PAGE // 2
     base = center - half + (page - 1) * PLAN_BUTTONS_PER_PAGE
-    if base < PLAN_MIN:
-        base = PLAN_MIN
+    if base < PLAN_MIN: base = PLAN_MIN
     if base + PLAN_BUTTONS_PER_PAGE - 1 > PLAN_MAX:
         base = PLAN_MAX - PLAN_BUTTONS_PER_PAGE + 1
-    if base < PLAN_MIN:
-        base = PLAN_MIN
+    if base < PLAN_MIN: base = PLAN_MIN
     items = [base + i for i in range(PLAN_BUTTONS_PER_PAGE)
              if PLAN_MIN <= base + i <= PLAN_MAX]
     return items, base
@@ -226,23 +201,19 @@ def main_menu(user_id):
     kb.add_button("📋 Остатки на складе", color=VkKeyboardColor.PRIMARY)
     kb.add_line()
     kb.add_button("📦 Новая заявка", color=VkKeyboardColor.POSITIVE)
-    kb.add_line()
     kb.add_button("📄 Мои заявки", color=VkKeyboardColor.SECONDARY)
     if role in ("warehouse", "admin"):
         kb.add_line()
         kb.add_button("📥 Заявки станочников", color=VkKeyboardColor.POSITIVE)
         kb.add_line()
-        kb.add_button("➕ Приход материала", color=VkKeyboardColor.PRIMARY)
-        kb.add_line()
+        kb.add_button("➕ Приход", color=VkKeyboardColor.PRIMARY)
         kb.add_button("📦 Массовый приход", color=VkKeyboardColor.PRIMARY)
         kb.add_line()
-        kb.add_button("🆕 Новая номенклатура", color=VkKeyboardColor.PRIMARY)
-        kb.add_line()
+        kb.add_button("🆕 Номенклатура", color=VkKeyboardColor.PRIMARY)
         kb.add_button("✏️ Редактировать", color=VkKeyboardColor.PRIMARY)
         kb.add_line()
-        kb.add_button("🗑 Удалить номенклатуру", color=VkKeyboardColor.NEGATIVE)
-        kb.add_line()
-        kb.add_button("🧹 Очистить остатки", color=VkKeyboardColor.NEGATIVE)
+        kb.add_button("🗑 Удалить", color=VkKeyboardColor.NEGATIVE)
+        kb.add_button("🧹 Очистить", color=VkKeyboardColor.NEGATIVE)
         kb.add_line()
         kb.add_button("📊 Сводка", color=VkKeyboardColor.SECONDARY)
         kb.add_button("📋 Журнал", color=VkKeyboardColor.SECONDARY)
@@ -309,29 +280,26 @@ HELP_TEXT = """📖 КОМАНДЫ БОТА
 
 Кладовщик:
 📥 Заявки станочников
-➕ Приход материала
+➕ Приход
 📦 Массовый приход
-🆕 Новая номенклатура
+🆕 Номенклатура
 ✏️ Редактировать
-🗑 Удалить номенклатуру
-🧹 Очистить остатки
+🗑 Удалить
+🧹 Очистить
 📊 Сводка
 📋 Журнал
 
 Админ:
 /users — пользователи
-/setrole <ID> <роль> — роль
-/resetstock — обнулить остатки"""
+/setrole <ID> <роль>
+/resetstock"""
 
 
 def show_thicknesses(vk, user_id):
     ths = distinct_thicknesses()
     if not ths:
-        send(vk, user_id, "Склад пуст.", main_menu(user_id))
-        return
+        send(vk, user_id, "Склад пуст.", main_menu(user_id)); return
     st = get_state(user_id)
-    cart = list(st["data"].get("cart", []))
-    plan = st["data"].get("plan", "")
     kb = VkKeyboard(one_time=False)
     for i, th in enumerate(ths):
         if i > 0: kb.add_line()
@@ -339,15 +307,15 @@ def show_thicknesses(vk, user_id):
                                payload={"command": f"cart_thick:{th}"})
     kb.add_line()
     kb.add_button("⬅️ В меню", color=VkKeyboardColor.SECONDARY)
-    set_state(user_id, "cart_choose", cart=cart, plan=plan)
+    set_state(user_id, "cart_choose", cart=list(st["data"].get("cart", [])),
+              plan=st["data"].get("plan", ""))
     send(vk, user_id, "📏 Шаг 1. Выберите толщину:", kb.get_keyboard())
 
 
 def show_decors_for_cart(vk, user_id, th):
     rows = decors_by_thickness(th)
     if not rows:
-        send(vk, user_id, f"Для толщины {th} нет позиций.", main_menu(user_id))
-        return
+        send(vk, user_id, f"Для толщины {th} нет позиций.", main_menu(user_id)); return
     st = get_state(user_id)
     cart = list(st["data"].get("cart", []))
     plan = st["data"].get("plan", "")
@@ -371,17 +339,14 @@ def show_decors_for_cart(vk, user_id, th):
 def add_to_cart(vk, user_id, mid):
     m = get_material(mid)
     if not m:
-        send(vk, user_id, "Материал не найден.")
-        return
+        send(vk, user_id, "Материал не найден."); return
     st = get_state(user_id)
     cart = list(st["data"].get("cart", []))
     plan = st["data"].get("plan", "")
     cart.append({"material_id": mid, "qty": None})
     set_state(user_id, "cart_qty", cart=cart, plan=plan, editing_index=len(cart) - 1)
-    send(vk, user_id,
-         f"🛒 Добавлено: {m['name']}\n"
-         f"Остаток: {m['qty']:g} {m['unit']}\n\n"
-         f"Введите количество (число):")
+    send(vk, user_id, f"🛒 Добавлено: {m['name']}\nОстаток: {m['qty']:g} {m['unit']}\n\n"
+                      f"Введите количество (число):")
 
 
 def show_cart(vk, user_id):
@@ -389,8 +354,7 @@ def show_cart(vk, user_id):
     cart = st["data"].get("cart", [])
     plan = st["data"].get("plan", "")
     if not cart:
-        send(vk, user_id, "Корзина пуста.", main_menu(user_id))
-        return
+        send(vk, user_id, "Корзина пуста.", main_menu(user_id)); return
     lines = ["🛒 ВАША ЗАЯВКА", ""]
     for i, it in enumerate(cart, 1):
         m = get_material(it["material_id"])
@@ -415,13 +379,10 @@ def show_cart(vk, user_id):
 def show_plan_page(vk, user_id, page=1):
     items, base = plan_page_items(page)
     if not items:
-        send(vk, user_id, "Нет номеров в этом диапазоне.")
-        return
+        send(vk, user_id, "Нет номеров в этом диапазоне."); return
     last = last_plan_number()
     hint = f"Последний план: {last}" if last else "Раньше планов не было"
     st = get_state(user_id)
-    cart = list(st["data"].get("cart", []))
-    plan = st["data"].get("plan", "")
     kb = VkKeyboard(one_time=False)
     for i, n in enumerate(items):
         if i % 2 == 0 and i > 0: kb.add_line()
@@ -435,14 +396,15 @@ def show_plan_page(vk, user_id, page=1):
         kb.add_callback_button("+10 ▶️", color=VkKeyboardColor.SECONDARY,
                                payload={"command": f"plan_page:{page+1}"})
     kb.add_line()
-    kb.add_callback_button("🔢 Ввести вручную", color=VkKeyboardColor.PRIMARY,
+    kb.add_callback_button("🔢 Вручную", color=VkKeyboardColor.PRIMARY,
                            payload={"command": "plan_manual"})
     kb.add_line()
     kb.add_button("⬅️ В меню", color=VkKeyboardColor.SECONDARY)
-    set_state(user_id, "choose_plan", cart=cart, plan=plan, page=page)
-    send(vk, user_id,
-         f"📋 Шаг 3. Выберите план.\n{hint}\nДиапазон {items[0]}–{items[-1]} "
-         f"({page}-я страница).", kb.get_keyboard())
+    set_state(user_id, "choose_plan", cart=list(st["data"].get("cart", [])),
+              plan=st["data"].get("plan", ""), page=page)
+    send(vk, user_id, f"📋 Шаг 3. Выберите план.\n{hint}\n"
+                      f"Диапазон {items[0]}–{items[-1]} ({page}-я страница).",
+         kb.get_keyboard())
 
 
 def submit_cart(vk, user_id):
@@ -450,21 +412,18 @@ def submit_cart(vk, user_id):
     cart = st["data"].get("cart", [])
     plan = st["data"].get("plan", "")
     if not cart:
-        send(vk, user_id, "Корзина пуста.", main_menu(user_id))
-        return
+        send(vk, user_id, "Корзина пуста.", main_menu(user_id)); return
     for it in cart:
         if it["qty"] is None or it["qty"] <= 0:
-            send(vk, user_id, "❗ У некоторых позиций не указано количество.")
-            return
+            send(vk, user_id, "❗ У некоторых позиций не указано количество."); return
     with db() as con:
-        cur = con.execute(
-            "INSERT INTO requests (user_id, material_id, qty, plan, comment, "
-            "status, created_at, updated_at) VALUES (?,?,?,?,?,'new',?,?)",
-            (user_id, cart[0]["material_id"], sum(i["qty"] for i in cart),
-             plan, "", now_str(), now_str()))
+        cur = con.execute("INSERT INTO requests (user_id,material_id,qty,plan,comment,"
+                          "status,created_at,updated_at) VALUES (?,?,?,?,?,'new',?,?)",
+                          (user_id, cart[0]["material_id"],
+                           sum(i["qty"] for i in cart), plan, "", now_str(), now_str()))
         rid = cur.lastrowid
         for it in cart:
-            con.execute("INSERT INTO request_items (request_id, material_id, qty, status) "
+            con.execute("INSERT INTO request_items (request_id,material_id,qty,status) "
                         "VALUES (?,?,?,'new')", (rid, it["material_id"], it["qty"]))
         con.commit()
     clear_state(user_id)
@@ -490,13 +449,12 @@ def submit_cart(vk, user_id):
 
 def show_my_requests(vk, user_id):
     with db() as con:
-        rows = con.execute(
-            "SELECT r.*, m.name AS m_name, m.unit AS m_unit FROM requests r "
-            "LEFT JOIN materials m ON m.id=r.material_id "
-            "WHERE r.user_id=? ORDER BY r.id DESC LIMIT 15", (user_id,)).fetchall()
+        rows = con.execute("SELECT r.*, m.name AS m_name, m.unit AS m_unit FROM requests r "
+                           "LEFT JOIN materials m ON m.id=r.material_id "
+                           "WHERE r.user_id=? ORDER BY r.id DESC LIMIT 15",
+                           (user_id,)).fetchall()
     if not rows:
-        send(vk, user_id, "У вас нет заявок.", back_kb())
-        return
+        send(vk, user_id, "У вас нет заявок.", back_kb()); return
     lines = ["📄 Мои заявки", ""]
     for r in rows:
         with db() as con:
@@ -511,19 +469,17 @@ def show_my_requests(vk, user_id):
 
 def show_active_requests(vk, user_id):
     with db() as con:
-        rows = con.execute(
-            "SELECT r.*, u.full_name FROM requests r LEFT JOIN users u ON u.user_id=r.user_id "
-            "WHERE r.status IN ('new','approved') ORDER BY r.id").fetchall()
+        rows = con.execute("SELECT r.*, u.full_name FROM requests r "
+                           "LEFT JOIN users u ON u.user_id=r.user_id "
+                           "WHERE r.status IN ('new','approved') ORDER BY r.id").fetchall()
     if not rows:
-        send(vk, user_id, "📥 Активных заявок нет.", back_kb())
-        return
+        send(vk, user_id, "📥 Активных заявок нет.", back_kb()); return
     send(vk, user_id, f"📥 Активных: {len(rows)}", back_kb())
     for r in rows:
         with db() as con:
-            items = con.execute(
-                "SELECT ri.*, m.name AS m_name, m.unit AS m_unit FROM request_items ri "
-                "LEFT JOIN materials m ON m.id=ri.material_id WHERE ri.request_id=?",
-                (r["id"],)).fetchall()
+            items = con.execute("SELECT ri.*, m.name AS m_name, m.unit AS m_unit "
+                                "FROM request_items ri LEFT JOIN materials m ON m.id=ri.material_id "
+                                "WHERE ri.request_id=?", (r["id"],)).fetchall()
         if items:
             body = "\n".join(f"   • {it['m_name'] or '?'} — {it['qty']:g} {it['m_unit'] or ''}"
                              for it in items)
@@ -545,8 +501,7 @@ def issue_request(vk, user_id, rid):
     with db() as con:
         r = con.execute("SELECT * FROM requests WHERE id=?", (rid,)).fetchone()
         if not r or r["status"] not in ("new", "approved"):
-            send(vk, user_id, "Заявка уже обработана.", back_kb())
-            return
+            send(vk, user_id, "Заявка уже обработана.", back_kb()); return
         items = con.execute("SELECT * FROM request_items WHERE request_id=?",
                             (rid,)).fetchall()
         if items:
@@ -554,8 +509,7 @@ def issue_request(vk, user_id, rid):
                 m = con.execute("SELECT * FROM materials WHERE id=?",
                                 (it["material_id"],)).fetchone()
                 if not m or m["qty"] < it["qty"]:
-                    send(vk, user_id, f"Не хватает материала (ID {it['material_id']}).",
-                         back_kb())
+                    send(vk, user_id, f"Не хватает (ID {it['material_id']}).", back_kb())
                     return
             summary = []
             for it in items:
@@ -568,8 +522,7 @@ def issue_request(vk, user_id, rid):
             m = con.execute("SELECT * FROM materials WHERE id=?",
                             (r["material_id"],)).fetchone()
             if not m or m["qty"] < r["qty"]:
-                send(vk, user_id, "Не хватает материала.", back_kb())
-                return
+                send(vk, user_id, "Не хватает материала.", back_kb()); return
             con.execute("UPDATE materials SET qty=qty-?, updated_at=? WHERE id=?",
                         (r["qty"], now_str(), m["id"]))
             summary = [f"{m['name']} — {r['qty']:g} {m['unit']}"]
@@ -586,8 +539,7 @@ def reject_request(vk, user_id, rid):
     with db() as con:
         r = con.execute("SELECT * FROM requests WHERE id=?", (rid,)).fetchone()
         if not r or r["status"] not in ("new", "approved"):
-            send(vk, user_id, "Заявка уже обработана.", back_kb())
-            return
+            send(vk, user_id, "Заявка уже обработана.", back_kb()); return
         con.execute("UPDATE requests SET status='rejected', updated_at=? WHERE id=?",
                     (now_str(), rid))
         con.commit()
@@ -601,14 +553,12 @@ def reject_request(vk, user_id, rid):
 def show_inc_list(vk, user_id, mass=False):
     rows = all_materials()
     if not rows:
-        send(vk, user_id, "Склад пуст.", main_menu(user_id))
-        return
+        send(vk, user_id, "Склад пуст.", main_menu(user_id)); return
     cmd = "minc_mat" if mass else "inc_mat"
     header = "📦 МАССОВЫЙ ПРИХОД" if mass else "➕ ПРИХОД"
     kb = VkKeyboard(one_time=False)
     for i, r in enumerate(rows):
-        if i > 0:
-            kb.add_line()
+        if i > 0: kb.add_line()
         kb.add_callback_button(f"{material_label(r)} ({r['qty']:g})",
                                color=VkKeyboardColor.PRIMARY,
                                payload={"command": f"{cmd}:{r['id']}"})
@@ -625,14 +575,13 @@ def show_mass_inc_cart(vk, user_id):
     st = get_state(user_id)
     cart = st["data"].get("mass_cart", [])
     if not cart:
-        send(vk, user_id, "Приход пуст.", main_menu(user_id))
-        return
+        send(vk, user_id, "Приход пуст.", main_menu(user_id)); return
     lines = ["📦 ПРИХОД (текущий)", ""]
     for i, it in enumerate(cart, 1):
         m = get_material(it["material_id"])
         lines.append(f"{i}. {m['name'] if m else '?'} — +{it['qty']:g}")
     kb = VkKeyboard(one_time=False)
-    kb.add_callback_button("➕ Ещё позиция", color=VkKeyboardColor.PRIMARY,
+    kb.add_callback_button("➕ Ещё", color=VkKeyboardColor.PRIMARY,
                            payload={"command": "minc_more"})
     kb.add_callback_button("✅ Завершить", color=VkKeyboardColor.POSITIVE,
                            payload={"command": "minc_done"})
@@ -645,8 +594,7 @@ def finish_mass_inc(vk, user_id):
     st = get_state(user_id)
     cart = st["data"].get("mass_cart", [])
     if not cart:
-        send(vk, user_id, "Приход пуст.", main_menu(user_id))
-        return
+        send(vk, user_id, "Приход пуст.", main_menu(user_id)); return
     with db() as con:
         for it in cart:
             con.execute("UPDATE materials SET qty=qty+?, updated_at=? WHERE id=?",
@@ -670,12 +618,10 @@ EDIT_FIELDS = {"name": "📝 Название", "thickness": "📏 Толщин�
 def show_edit_list(vk, user_id):
     rows = all_materials()
     if not rows:
-        send(vk, user_id, "Склад пуст.", back_kb())
-        return
+        send(vk, user_id, "Склад пуст.", back_kb()); return
     kb = VkKeyboard(one_time=False)
     for i, r in enumerate(rows):
-        if i > 0:
-            kb.add_line()
+        if i > 0: kb.add_line()
         kb.add_callback_button(f"✏️ {material_label(r)}",
                                color=VkKeyboardColor.PRIMARY,
                                payload={"command": f"edit:{r['id']}"})
@@ -687,14 +633,12 @@ def show_edit_list(vk, user_id):
 def show_edit_fields(vk, user_id, mid):
     m = get_material(mid)
     if not m:
-        send(vk, user_id, "Материал не найден.", back_kb())
-        return
+        send(vk, user_id, "Материал не найден.", back_kb()); return
     kb = VkKeyboard(one_time=False)
     first = True
     for key, label in EDIT_FIELDS.items():
         val = m[key] if key in m.keys() else ""
-        if not first:
-            kb.add_line()
+        if not first: kb.add_line()
         first = False
         kb.add_callback_button(f"{label}: {val if val not in (None, '') else '—'}",
                                color=VkKeyboardColor.PRIMARY,
@@ -707,58 +651,51 @@ def show_edit_fields(vk, user_id, mid):
 def do_edit(vk, user_id, mid, field, value):
     m = get_material(mid)
     if not m:
-        send(vk, user_id, "Материал не найден.", main_menu(user_id))
-        return
+        send(vk, user_id, "Материал не найден.", main_menu(user_id)); return
     with db() as con:
         con.execute(f"UPDATE materials SET {field}=?, updated_at=? WHERE id=?",
                     (value, now_str(), mid))
         con.commit()
     clear_state(user_id)
     log_action(user_id, f"Изменён материал ID {mid}", f"{field}={value}")
-    send(vk, user_id,
-         f"✅ Изменено\n{m['name']}\n{EDIT_FIELDS.get(field, field)}: {value or '—'}",
-         main_menu(user_id))
+    send(vk, user_id, f"✅ Изменено\n{m['name']}\n{EDIT_FIELDS.get(field, field)}: "
+                      f"{value or '—'}", main_menu(user_id))
 
 
 # ======================= УДАЛЕНИЕ =======================
 def show_delete_list(vk, user_id):
     rows = all_materials()
     if not rows:
-        send(vk, user_id, "Склад пуст.", back_kb())
-        return
+        send(vk, user_id, "Склад пуст.", back_kb()); return
     kb = VkKeyboard(one_time=False)
     for i, r in enumerate(rows):
-        if i > 0:
-            kb.add_line()
+        if i > 0: kb.add_line()
         kb.add_callback_button(f"🗑 {material_label(r)}",
                                color=VkKeyboardColor.NEGATIVE,
                                payload={"command": f"delmat:{r['id']}"})
     kb.add_line()
     kb.add_button("⬅️ В меню", color=VkKeyboardColor.SECONDARY)
-    send(vk, user_id, "🗑 Выберите материал для удаления:", kb.get_keyboard())
+    send(vk, user_id, "🗑 Выберите материал:", kb.get_keyboard())
 
 
 def show_delete_confirm(vk, user_id, mid):
     m = get_material(mid)
     if not m:
-        send(vk, user_id, "Материал не найден.", back_kb())
-        return
+        send(vk, user_id, "Материал не найден.", back_kb()); return
     kb = VkKeyboard(one_time=False)
     kb.add_callback_button("✅ Да, удалить", color=VkKeyboardColor.NEGATIVE,
                            payload={"command": f"delmat_ok:{mid}"})
     kb.add_callback_button("❌ Отмена", color=VkKeyboardColor.SECONDARY,
                            payload={"command": "del_list"})
-    send(vk, user_id,
-         f"🗑 Удалить материал?\n\n📦 {m['name']}\n"
-         f"Остаток: {m['qty']:g} {m['unit']}\n\n"
-         f"⚠️ Связанные заявки тоже удалятся.", kb.get_keyboard())
+    send(vk, user_id, f"🗑 Удалить материал?\n\n📦 {m['name']}\n"
+                      f"Остаток: {m['qty']:g} {m['unit']}\n\n"
+                      f"⚠️ Связанные заявки тоже удалятся.", kb.get_keyboard())
 
 
 def delete_material(vk, user_id, mid):
     m = get_material(mid)
     if not m:
-        send(vk, user_id, "Уже удалён.", main_menu(user_id))
-        return
+        send(vk, user_id, "Уже удалён.", main_menu(user_id)); return
     with db() as con:
         con.execute("DELETE FROM requests WHERE material_id=?", (mid,))
         con.execute("DELETE FROM request_items WHERE material_id=?", (mid,))
@@ -768,10 +705,10 @@ def delete_material(vk, user_id, mid):
     send(vk, user_id, f"🗑 Удалено: {m['name']}", main_menu(user_id))
 
 
-# ======================= ОЧИСТКА, СВОДКА, ЖУРНАЛ, ЮЗЕРЫ =======================
+# ======================= ОЧИСТКА / СВОДКА / ЖУРНАЛ / ЮЗЕРЫ =======================
 def show_clear_stock_confirm(vk, user_id):
     kb = VkKeyboard(one_time=False)
-    kb.add_callback_button("✅ Да, обнулить", color=VkKeyboardColor.NEGATIVE,
+    kb.add_callback_button("✅ Да", color=VkKeyboardColor.NEGATIVE,
                            payload={"command": "clear_stock_ok"})
     kb.add_callback_button("❌ Отмена", color=VkKeyboardColor.SECONDARY,
                            payload={"command": "menu"})
@@ -798,7 +735,8 @@ def show_stats(vk, user_id):
              f"📊 Общий остаток: {tq:g}", "", f"📥 Активных: {ac}",
              f"✅ Выдано: {isd}", f"❌ Отклонено: {rj}", "", "👥 Пользователи:"]
     for u in us:
-        rr = {"operator": "станочник", "warehouse": "кладовщик", "admin": "админ"}.get(u["role"], u["role"])
+        rr = {"operator": "станочник", "warehouse": "кладовщик",
+              "admin": "админ"}.get(u["role"], u["role"])
         lines.append(f"   • {rr}: {u['c']}")
     send(vk, user_id, "\n".join(lines), back_kb())
 
@@ -809,8 +747,7 @@ def show_log(vk, user_id):
                            "LEFT JOIN users u ON u.user_id=l.user_id "
                            "ORDER BY l.id DESC LIMIT 20").fetchall()
     if not rows:
-        send(vk, user_id, "📋 Журнал пуст.", back_kb())
-        return
+        send(vk, user_id, "📋 Журнал пуст.", back_kb()); return
     lines = ["📋 ЖУРНАЛ (последние 20)", ""]
     for r in rows:
         who = r["full_name"] or r["user_id"] or "—"
@@ -821,16 +758,15 @@ def show_log(vk, user_id):
 
 def show_users(vk, user_id):
     if not is_admin(user_id):
-        send(vk, user_id, "Нет доступа.")
-        return
+        send(vk, user_id, "Нет доступа."); return
     with db() as con:
         rows = con.execute("SELECT * FROM users ORDER BY role, full_name").fetchall()
     if not rows:
-        send(vk, user_id, "Нет пользователей.", back_kb())
-        return
+        send(vk, user_id, "Нет пользователей.", back_kb()); return
     lines = ["👥 ПОЛЬЗОВАТЕЛИ", ""]
     for r in rows:
-        rr = {"operator": "станочник", "warehouse": "кладовщик", "admin": "админ"}.get(r["role"], r["role"])
+        rr = {"operator": "станочник", "warehouse": "кладовщик",
+              "admin": "админ"}.get(r["role"], r["role"])
         block = " 🚫" if r["blocked"] else ""
         lines.append(f"{r['full_name'] or r['user_id']} (id{r['user_id']})\n   {rr}{block}")
     send(vk, user_id, "\n".join(lines), back_kb())
@@ -844,8 +780,7 @@ def start_new_material(vk, user_id):
 # ======================= CALLBACK =======================
 def handle_callback(vk, user_id, command):
     print(f"[CALLBACK] user={user_id} cmd={command!r}")
-    if not command:
-        return
+    if not command: return
     if command == "menu":
         clear_state(user_id); send(vk, user_id, "Главное меню:", main_menu(user_id)); return
     if command == "stock_refresh":
@@ -908,15 +843,14 @@ def handle_callback(vk, user_id, command):
         mid = int(command.split(":", 1)[1]); m = get_material(mid)
         if not m: send(vk, user_id, "Материал не найден."); return
         set_state(user_id, "inc_qty", material_id=mid)
-        send(vk, user_id, f"➕ {m['name']}\nОстаток: {m['qty']:g} {m['unit']}\n\nВведите количество:")
-        return
+        send(vk, user_id, f"➕ {m['name']}\nОстаток: {m['qty']:g} {m['unit']}\n\n"
+                          f"Введите количество:"); return
     if command.startswith("minc_mat:"):
         mid = int(command.split(":", 1)[1]); m = get_material(mid)
         if not m: send(vk, user_id, "Материал не найден."); return
         st = get_state(user_id)
         set_state(user_id, "minc_qty", mass_cart=st["data"].get("mass_cart", []), material_id=mid)
-        send(vk, user_id, f"📦 {m['name']}\nВведите количество:")
-        return
+        send(vk, user_id, f"📦 {m['name']}\nВведите количество:"); return
     if command == "minc_more":
         st = get_state(user_id)
         set_state(user_id, "minc_choose", mass_cart=st["data"].get("mass_cart", []))
@@ -950,30 +884,28 @@ def handle_message(vk, user_id, text):
         r = get_role(user_id)
         rr = {"operator": "станочник", "warehouse": "кладовщик (погрузчик)",
               "admin": "администратор"}.get(r, r)
-        send(vk, user_id, f"👋 Складской бот «Пиломатериалы»\n\nВы вошли как: {rr}\n\nВыберите действие:",
-             main_menu(user_id))
+        send(vk, user_id, f"👋 Складской бот «Пиломатериалы»\n\n"
+                          f"Вы вошли как: {rr}\n\nВыберите действие:", main_menu(user_id))
         return
     if text == "/help":
         send(vk, user_id, HELP_TEXT, back_kb()); return
     if text == "/whoami":
         send(vk, user_id, f"Ваш ID: {user_id}\nРоль: {get_role(user_id)}\n"
-                          f"В ADMIN_IDS: {'да' if user_id in ADMIN_IDS else 'нет'}", back_kb())
-        return
+                          f"В ADMIN_IDS: {'да' if user_id in ADMIN_IDS else 'нет'}",
+             back_kb()); return
     if text == "/users":
         show_users(vk, user_id); return
     if text.startswith("/setrole"):
-        if not is_admin(user_id):
-            send(vk, user_id, "Нет доступа."); return
+        if not is_admin(user_id): send(vk, user_id, "Нет доступа."); return
         p = text.split()
         if len(p) != 3 or p[2] not in ("operator", "warehouse", "admin"):
             send(vk, user_id, "Использование: /setrole 123456789 warehouse"); return
         with db() as con:
             con.execute("UPDATE users SET role=? WHERE user_id=?", (p[2], int(p[1])))
             con.commit()
-        send(vk, user_id, f"✅ Пользователь {p[1]} → {p[2]}"); return
+        send(vk, user_id, f"✅ {p[1]} → {p[2]}"); return
     if text == "/resetstock":
-        if not is_admin(user_id):
-            send(vk, user_id, "Нет доступа."); return
+        if not is_admin(user_id): send(vk, user_id, "Нет доступа."); return
         clear_stock(vk, user_id); return
 
     st = get_state(user_id); state = st["state"]; data = st["data"]
@@ -1050,8 +982,7 @@ def handle_message(vk, user_id, text):
         if raw == "-":
             p = [x for x in (data["thickness"], data["decor"]) if x]
             name = ("Доска " + " ".join(p)).strip() if p else ""
-        else:
-            name = raw
+        else: name = raw
         if not name:
             send(vk, user_id, "❗ Название не пустое."); return
         set_state(user_id, "new_qty", thickness=data["thickness"],
@@ -1069,7 +1000,7 @@ def handle_message(vk, user_id, text):
     if state == "new_unit":
         unit = "шт" if text.strip() == "-" else text.strip()
         with db() as con:
-            con.execute("INSERT INTO materials (name, unit, qty, thickness, decor, updated_at) "
+            con.execute("INSERT INTO materials (name,unit,qty,thickness,decor,updated_at) "
                         "VALUES (?,?,?,?,?,?)",
                         (data["name"], unit, data["qty"], data["thickness"],
                          data["decor"], now_str())); con.commit()
@@ -1086,23 +1017,23 @@ def handle_message(vk, user_id, text):
     if text == "📥 Заявки станочников":
         if not is_warehouse(user_id): send(vk, user_id, "Нет доступа."); return
         show_active_requests(vk, user_id); return
-    if text == "➕ Приход материала":
+    if text == "➕ Приход":
         if not is_warehouse(user_id): send(vk, user_id, "Нет доступа."); return
         show_inc_list(vk, user_id, mass=False); return
     if text == "📦 Массовый приход":
         if not is_warehouse(user_id): send(vk, user_id, "Нет доступа."); return
         set_state(user_id, "minc_choose", mass_cart=[])
         show_inc_list(vk, user_id, mass=True); return
-    if text == "🆕 Новая номенклатура":
+    if text == "🆕 Номенклатура":
         if not is_warehouse(user_id): send(vk, user_id, "Нет доступа."); return
         start_new_material(vk, user_id); return
     if text == "✏️ Редактировать":
         if not is_warehouse(user_id): send(vk, user_id, "Нет доступа."); return
         show_edit_list(vk, user_id); return
-    if text == "🗑 Удалить номенклатуру":
+    if text == "🗑 Удалить":
         if not is_warehouse(user_id): send(vk, user_id, "Нет доступа."); return
         show_delete_list(vk, user_id); return
-    if text == "🧹 Очистить остатки":
+    if text == "🧹 Очистить":
         if not is_warehouse(user_id): send(vk, user_id, "Нет доступа."); return
         show_clear_stock_confirm(vk, user_id); return
     if text == "📊 Сводка":
@@ -1135,8 +1066,7 @@ def main():
                 try:
                     import json as _json
                     payload = _json.loads(payload)
-                except Exception:
-                    payload = {}
+                except Exception: payload = {}
             command = payload.get("command") if isinstance(payload, dict) else None
             try:
                 vk.messages.sendMessageEventAnswer(
@@ -1145,10 +1075,8 @@ def main():
                     peer_id=event.obj.peer_id)
             except Exception as e:
                 print(f"[ANSWER ERROR] {e}")
-            try:
-                ensure_user(vk, user_id)
-            except Exception as e:
-                print(f"[ENSURE ERROR] {e}")
+            try: ensure_user(vk, user_id)
+            except Exception as e: print(f"[ENSURE ERROR] {e}")
             try:
                 handle_callback(vk, user_id, command)
             except Exception as e:
@@ -1168,8 +1096,7 @@ def main():
             print(f"[ERROR message] user={user_id} text={text!r}: {e}")
             try:
                 send(vk, user_id, "⚠️ Ошибка. Попробуйте /start.", main_menu(user_id))
-            except Exception:
-                pass
+            except Exception: pass
 
 
 if __name__ == "__main__":
